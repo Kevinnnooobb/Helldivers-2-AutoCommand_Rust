@@ -1,0 +1,1 @@
+Result<HHOOK, windows_result::error::Error>: Param<HHOOK, core::r#type::CopyType>

@@ -1,0 +1,27 @@
+{
+  "key_bindings": {
+    "↑": "w",
+    "←": "a",
+    "↓": "s",
+    "→": "d"
+  },
+  "stratagem_key": "ctrl",
+  "key_delay": 0.05,
+  "slot_hotkeys": {
+    "3": "d"
+  },
+  "loadout": [
+    17,
+    56,
+    5,
+    null,
+    null,
+    59,
+    54,
+    null,
+    null,
+    null
+  ],
+  "listening_enabled": false,
+  "last_profile": ""
+}
