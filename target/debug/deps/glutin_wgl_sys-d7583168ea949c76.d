@@ -1,9 +1,0 @@
-C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\deps\glutin_wgl_sys-d7583168ea949c76.d: C:\Users\Rin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_wgl_sys-0.6.1\src\lib.rs C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\build\glutin_wgl_sys-9c37fe4196d5373c\out/wgl_bindings.rs C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\build\glutin_wgl_sys-9c37fe4196d5373c\out/wgl_extra_bindings.rs
-
-C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\deps\libglutin_wgl_sys-d7583168ea949c76.rmeta: C:\Users\Rin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_wgl_sys-0.6.1\src\lib.rs C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\build\glutin_wgl_sys-9c37fe4196d5373c\out/wgl_bindings.rs C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\build\glutin_wgl_sys-9c37fe4196d5373c\out/wgl_extra_bindings.rs
-
-C:\Users\Rin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_wgl_sys-0.6.1\src\lib.rs:
-C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\build\glutin_wgl_sys-9c37fe4196d5373c\out/wgl_bindings.rs:
-C:\Users\Rin\.astrbot\data\workspaces\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\h2ac-rs\target\debug\build\glutin_wgl_sys-9c37fe4196d5373c\out/wgl_extra_bindings.rs:
-
-# env-dep:OUT_DIR=C:\\Users\\Rin\\.astrbot\\data\\workspaces\\Rin_FriendMessage_56B7995CD0D3060231A6D834DDE5538E\\h2ac-rs\\target\\debug\\build\\glutin_wgl_sys-9c37fe4196d5373c\\out
