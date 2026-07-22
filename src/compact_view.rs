@@ -3,7 +3,6 @@ use eframe::egui::{
     self, Align2, Color32, Context, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, Vec2,
 };
 use crate::config;
-use crate::stratagems::STRATAGEMS;
 use crate::theme::*;
 use crate::widgets::*;
 
@@ -56,7 +55,7 @@ impl H2ACApp {
             });
 
         // 监听脉冲动画
-        if self.listening {
+        if self.model.listening {
             ctx.request_repaint_after(std::time::Duration::from_millis(66));
         }
     }
@@ -64,7 +63,7 @@ impl H2ACApp {
     fn render_compact_tile(&mut self, ui: &mut Ui, idx: usize) {
         let (resp, p) = ui.allocate_painter(Vec2::splat(TILE), Sense::click());
         let rect = resp.rect;
-        let filled = self.slots[idx].is_some();
+        let filled = self.slot_filled(idx);
 
         let border = if resp.hovered() {
             Stroke::new(1.0, GOLD)
@@ -73,9 +72,9 @@ impl H2ACApp {
         };
         paint_chamfer(&p, rect, 6.0, if filled { BG_RAISED } else { BG_PANEL }, border);
 
-        if let Some(si) = self.slots[idx] {
-            let s = &STRATAGEMS[si];
-            if let Some(tex) = self.icons.get(s.icon) {
+        if filled {
+            let icon_key = self.slot_icon(idx).unwrap_or("");
+            if let Some(tex) = self.model.icons.get(icon_key) {
                 p.image(
                     tex.id(),
                     rect.shrink(6.0),
@@ -85,11 +84,10 @@ impl H2ACApp {
             } else {
                 p.text(rect.center(), Align2::CENTER_CENTER, "?", hud(12.0), TEXT_DIM);
             }
-            // 分类色点
             p.circle_filled(
                 Pos2::new(rect.right() - 5.0, rect.bottom() - 5.0),
                 2.0,
-                category_color(s.category),
+                category_color(&self.slot_category(idx).unwrap_or_default()),
             );
         } else {
             p.text(
@@ -102,7 +100,7 @@ impl H2ACApp {
         }
 
         // 热键角标
-        if let Some(hk) = self.config.slot_hotkeys.get(&idx.to_string()) {
+        if let Some(hk) = self.model.config.slot_hotkeys.get(&idx.to_string()) {
             p.text(
                 Pos2::new(rect.left() + 3.0, rect.top() + 1.0),
                 Align2::LEFT_TOP,
@@ -114,7 +112,7 @@ impl H2ACApp {
 
         // 执行闪光
         let now = ui.ctx().input(|i| i.time);
-        if let Some(&t0) = self.flash.get(&idx) {
+        if let Some(&t0) = self.model.flash.get(&idx) {
             let k = (now - t0) as f32 / 0.7;
             if k < 1.0 {
                 let a = ((1.0 - k) * 160.0) as u8;
@@ -129,9 +127,10 @@ impl H2ACApp {
 
         if resp.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            if let Some(si) = self.slots[idx] {
-                let s = &STRATAGEMS[si];
-                resp.clone().on_hover_text(format!("{} {}", s.name, crate::stratagems::command_to_string(&s.command)));
+            if filled {
+                let name = self.slot_name(idx).unwrap_or_default();
+                let cmd = self.slot_command(idx);
+                resp.clone().on_hover_text(format!("{} {}", name, crate::stratagems::command_to_string(&cmd)));
             }
         }
         if resp.clicked() {
@@ -146,8 +145,8 @@ impl H2ACApp {
         if resp.hovered() {
             paint_chamfer(&p, resp.rect.shrink(1.0), 4.0, BG_HOVER, Stroke::NONE);
         }
-        status_lamp(&p, resp.rect.center(), 4.5, self.listening, t);
-        resp.clone().on_hover_text(if self.listening { "监听中 — 点击静音" } else { "已静音 — 点击开启" });
+        status_lamp(&p, resp.rect.center(), 4.5, self.model.listening, t);
+        resp.clone().on_hover_text(if self.model.listening { "监听中 — 点击静音" } else { "已静音 — 点击开启" });
         if resp.clicked() {
             self.toggle_listening();
         }

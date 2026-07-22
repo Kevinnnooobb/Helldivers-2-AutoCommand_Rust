@@ -3,7 +3,7 @@ use eframe::egui::{
     self, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, Stroke,
 };
 use crate::stratagems::{
-    CAT_BACKPACKS, CAT_EAGLE, CAT_MINES, CAT_MISSION, CAT_ORBITAL, CAT_SENTRIES, CAT_SUPPORT,
+    CAT_BACKPACKS, CAT_EAGLE, CAT_EMPLACEMENTS, CAT_MISSION, CAT_ORBITAL, CAT_SENTRIES, CAT_SUPPORT,
     CAT_VEHICLES,
 };
 
@@ -41,13 +41,13 @@ pub const MAIN_H: f32 = 640.0;
 pub const COMPACT_H: f32 = 56.0;
 pub const CHAMFER: f32 = 10.0; // 切角大小
 
-/// 分类对应强调色
+/// 分类对应强调色（Wiki 色系：Red=Offensive, Blue=Supply, Green=Defensive, Yellow=Mission）
 pub fn category_color(cat: &str) -> Color32 {
     match cat {
         CAT_MISSION => GOLD_MID,
         CAT_ORBITAL | CAT_EAGLE => CAT_FIRE,
         CAT_SUPPORT | CAT_BACKPACKS | CAT_VEHICLES => CAT_EQUIP,
-        CAT_SENTRIES | CAT_MINES => CAT_DEF,
+        CAT_SENTRIES | CAT_EMPLACEMENTS => CAT_DEF,
         _ => TEXT_SUB,
     }
 }

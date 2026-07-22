@@ -1,19 +1,19 @@
 // 绝地潜兵2 战备数据库 — Helldivers 2 Stratagem Database
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 pub const UP: &str = "↑";
 pub const DOWN: &str = "↓";
 pub const LEFT: &str = "←";
 pub const RIGHT: &str = "→";
 
-pub const CAT_MISSION: &str = "任务战备";
-pub const CAT_ORBITAL: &str = "轨道火力";
-pub const CAT_EAGLE: &str = "飞鹰";
-pub const CAT_SUPPORT: &str = "支援武器";
-pub const CAT_SENTRIES: &str = "哨戒炮";
-pub const CAT_MINES: &str = "地雷，盾和手操炮台";
-pub const CAT_BACKPACKS: &str = "背包";
-pub const CAT_VEHICLES: &str = "载具";
+pub const CAT_MISSION: &str = "Mission Stratagems";
+pub const CAT_ORBITAL: &str = "Orbital Strikes";
+pub const CAT_EAGLE: &str = "Eagle Strikes";
+pub const CAT_SUPPORT: &str = "Support Weapons";
+pub const CAT_SENTRIES: &str = "Sentries";
+pub const CAT_EMPLACEMENTS: &str = "Emplacements";
+pub const CAT_BACKPACKS: &str = "Backpacks";
+pub const CAT_VEHICLES: &str = "Vehicles";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Stratagem {
@@ -214,25 +214,25 @@ pub static STRATAGEMS: &[Stratagem] = &[
         command: cmd![DOWN, UP, LEFT, DOWN, RIGHT, UP], description: "化学护卫无人机",
         icon: "guard_dog_breath" },
     // ─── 地雷，盾和手操炮台 ───
-    Stratagem { category: CAT_MINES, model: "MD-6", name: "反步兵雷区",
+    Stratagem { category: CAT_EMPLACEMENTS, model: "MD-6", name: "反步兵雷区",
         command: cmd![DOWN, LEFT, UP, RIGHT], description: "反步兵地雷",
         icon: "anti_personnel_minefield" },
-    Stratagem { category: CAT_MINES, model: "MD-I4", name: "燃烧地雷",
+    Stratagem { category: CAT_EMPLACEMENTS, model: "MD-I4", name: "燃烧地雷",
         command: cmd![DOWN, LEFT, LEFT, DOWN], description: "燃烧地雷区",
         icon: "incendiary_mines" },
-    Stratagem { category: CAT_MINES, model: "MD-17", name: "反坦克地雷",
+    Stratagem { category: CAT_EMPLACEMENTS, model: "MD-17", name: "反坦克地雷",
         command: cmd![DOWN, LEFT, UP, UP], description: "反坦克地雷区",
         icon: "anti_tank_mines" },
-    Stratagem { category: CAT_MINES, model: "SH-32", name: "防护罩生成器",
+    Stratagem { category: CAT_EMPLACEMENTS, model: "SH-32", name: "防护罩生成器",
         command: cmd![DOWN, UP, LEFT, DOWN, RIGHT, RIGHT], description: "护盾圆顶",
         icon: "shield_generator_pack" },
-    Stratagem { category: CAT_MINES, model: "FX-12", name: "防护罩生成中继器",
+    Stratagem { category: CAT_EMPLACEMENTS, model: "FX-12", name: "防护罩生成中继器",
         command: cmd![DOWN, DOWN, LEFT, RIGHT, UP, DOWN], description: "防护盾中继器",
         icon: "shield_generator_relay" },
-    Stratagem { category: CAT_MINES, model: "E/MG-101", name: "重机枪炮台",
+    Stratagem { category: CAT_EMPLACEMENTS, model: "E/MG-101", name: "重机枪炮台",
         command: cmd![DOWN, UP, LEFT, UP, RIGHT, RIGHT], description: "手动操作重机枪炮台",
         icon: "hmg_emplacement" },
-    Stratagem { category: CAT_MINES, model: "AT-47", name: "反坦克炮台",
+    Stratagem { category: CAT_EMPLACEMENTS, model: "AT-47", name: "反坦克炮台",
         command: cmd![DOWN, LEFT, UP, UP, DOWN], description: "手动操作反坦克炮台",
         icon: "anti_tank_emplacement" },
     // ─── 背包 ───
@@ -296,3 +296,133 @@ pub fn search(query: &str) -> Vec<&'static Stratagem> {
 pub fn command_to_string(cmd: &[&str]) -> String {
     cmd.join("")
 }
+
+/// 英文字符串方向 → 箭头符号
+pub fn dir_to_arrow(dir: &str) -> &'static str {
+    match dir {
+        "up" => "↑",
+        "down" => "↓",
+        "left" => "←",
+        "right" => "→",
+        _ => "?",
+    }
+}
+
+// ─── 插件战备运行时类型 ───
+
+/// 从插件 JSON 加载的战备（所有字段为自有 String）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginStratagem {
+    pub name: String,
+    pub category: String,
+    pub model: String,
+    pub command: Vec<String>,
+    pub description: String,
+    pub icon: String,
+}
+
+/// 统合引用：基础内置战备（静态引用）或插件战备（自有数据引用）
+pub enum StratagemRef<'a> {
+    Base(&'static Stratagem),
+    Plugin(&'a PluginStratagem),
+}
+
+/// 自有版本（可脱离 borrow 使用）
+pub enum OwnedStratagem {
+    Base(&'static Stratagem),
+    Plugin(PluginStratagem),
+}
+
+impl OwnedStratagem {
+    pub fn name(&self) -> &str {
+        match self { OwnedStratagem::Base(s) => s.name, OwnedStratagem::Plugin(s) => &s.name }
+    }
+    pub fn category(&self) -> &str {
+        match self { OwnedStratagem::Base(s) => s.category, OwnedStratagem::Plugin(s) => &s.category }
+    }
+    pub fn model(&self) -> &str {
+        match self { OwnedStratagem::Base(s) => s.model, OwnedStratagem::Plugin(s) => &s.model }
+    }
+    pub fn command(&self) -> Vec<&str> {
+        match self {
+            OwnedStratagem::Base(s) => s.command.to_vec(),
+            OwnedStratagem::Plugin(s) => s.command.iter().map(|c| dir_to_arrow(c.as_str())).collect(),
+        }
+    }
+    pub fn description(&self) -> &str {
+        match self { OwnedStratagem::Base(s) => s.description, OwnedStratagem::Plugin(s) => &s.description }
+    }
+    pub fn icon(&self) -> &str {
+        match self { OwnedStratagem::Base(s) => s.icon, OwnedStratagem::Plugin(s) => &s.icon }
+    }
+    pub fn as_ref(&self) -> StratagemRef {
+        match self {
+            OwnedStratagem::Base(s) => StratagemRef::Base(s),
+            OwnedStratagem::Plugin(s) => StratagemRef::Plugin(s),
+        }
+    }
+}
+
+impl StratagemRef<'_> {
+    pub fn name(&self) -> &str {
+        match self {
+            StratagemRef::Base(s) => s.name,
+            StratagemRef::Plugin(s) => &s.name,
+        }
+    }
+    pub fn category(&self) -> &str {
+        match self {
+            StratagemRef::Base(s) => s.category,
+            StratagemRef::Plugin(s) => &s.category,
+        }
+    }
+    pub fn model(&self) -> &str {
+        match self {
+            StratagemRef::Base(s) => s.model,
+            StratagemRef::Plugin(s) => &s.model,
+        }
+    }
+    pub fn command(&self) -> Vec<&str> {
+        match self {
+            StratagemRef::Base(s) => s.command.to_vec(),
+            StratagemRef::Plugin(s) => s.command.iter().map(|s| dir_to_arrow(s.as_str())).collect(),
+        }
+    }
+    pub fn description(&self) -> &str {
+        match self {
+            StratagemRef::Base(s) => s.description,
+            StratagemRef::Plugin(s) => &s.description,
+        }
+    }
+    pub fn icon(&self) -> &str {
+        match self {
+            StratagemRef::Base(s) => s.icon,
+            StratagemRef::Plugin(s) => &s.icon,
+        }
+    }
+}
+
+/// 插件主题颜色
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginTheme {
+    pub name: String,
+    pub background_color: String,
+    pub border_color: String,
+    pub accent_color: String,
+}
+
+/// 插件清单（对应 plugins/*.json）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginManifest {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub stratagems: Vec<PluginStratagem>,
+    #[serde(default)]
+    pub themes: Vec<PluginTheme>,
+}
+
+fn default_true() -> bool { true }

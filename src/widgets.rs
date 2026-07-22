@@ -138,6 +138,7 @@ pub enum Glyph {
     Compact,
     Restore,
     Keyboard,
+    Play,
     Search,
 }
 
@@ -281,6 +282,18 @@ pub fn paint_glyph(p: &Painter, r: Rect, g: Glyph, color: Color32) {
                 c.y + u * 0.22,
                 Stroke::new(1.2, color),
             );
+        }
+        Glyph::Play => {
+            let d = u * 0.6;
+            p.add(Shape::convex_polygon(
+                vec![
+                    Pos2::new(c.x - d * 0.6, c.y - d),
+                    Pos2::new(c.x + d, c.y),
+                    Pos2::new(c.x - d * 0.6, c.y + d),
+                ],
+                color,
+                Stroke::NONE,
+            ));
         }
         Glyph::Search => {
             let cr = u * 0.45;
