@@ -1,6 +1,7 @@
 // HUD 自绘组件库 — 切角面板 / 角括号 / 箭头 / 字形 / 状态灯
 use eframe::egui::{
-    self, Color32, CornerRadius, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2,
+    self, Align2, Color32, Context, CornerRadius, Key, Painter, Pos2, Rect,
+    Response, Sense, Shape, Stroke, Ui, Vec2,
 };
 use crate::stratagems::{DOWN, LEFT, RIGHT, UP};
 use crate::theme::*;
@@ -362,6 +363,134 @@ pub fn hud_panel(
             .max_rect(rect.shrink2(Vec2::new(14.0, 10.0)))
             .layout(*ui.layout()),
     );
-    add(&mut child);
+        add(&mut child);
     rect
+}
+
+pub fn egui_key_to_name(key: &Key) -> Option<&'static str> {
+    match key {
+        Key::F1 => Some("f1"), Key::F2 => Some("f2"), Key::F3 => Some("f3"), Key::F4 => Some("f4"),
+        Key::F5 => Some("f5"), Key::F6 => Some("f6"), Key::F7 => Some("f7"), Key::F8 => Some("f8"),
+        Key::F9 => Some("f9"), Key::F10 => Some("f10"), Key::F11 => Some("f11"), Key::F12 => Some("f12"),
+        Key::Space => Some("space"), Key::Enter => Some("enter"), Key::Tab => Some("tab"),
+        Key::Backspace => Some("backspace"), Key::Escape => Some("esc"),
+        Key::Num0 => Some("0"), Key::Num1 => Some("1"), Key::Num2 => Some("2"), Key::Num3 => Some("3"),
+        Key::Num4 => Some("4"), Key::Num5 => Some("5"), Key::Num6 => Some("6"), Key::Num7 => Some("7"),
+        Key::Num8 => Some("8"), Key::Num9 => Some("9"),
+        Key::A => Some("a"), Key::B => Some("b"), Key::C => Some("c"), Key::D => Some("d"),
+        Key::E => Some("e"), Key::F => Some("f"), Key::G => Some("g"), Key::H => Some("h"),
+        Key::I => Some("i"), Key::J => Some("j"), Key::K => Some("k"), Key::L => Some("l"),
+        Key::M => Some("m"), Key::N => Some("n"), Key::O => Some("o"), Key::P => Some("p"),
+        Key::Q => Some("q"), Key::R => Some("r"), Key::S => Some("s"), Key::T => Some("t"),
+        Key::U => Some("u"), Key::V => Some("v"), Key::W => Some("w"), Key::X => Some("x"),
+        Key::Y => Some("y"), Key::Z => Some("z"),
+        Key::ArrowUp => Some("up"), Key::ArrowDown => Some("down"),
+        Key::ArrowLeft => Some("left"), Key::ArrowRight => Some("right"),
+        Key::Insert => Some("insert"), Key::Delete => Some("delete"),
+        Key::Home => Some("home"), Key::End => Some("end"),
+        Key::PageUp => Some("pageup"), Key::PageDown => Some("pagedown"),
+        _ => None,
+    }
+}
+
+pub fn format_key_name(name: &str) -> String {
+    match name {
+        "lctrl" => "L Ctrl".into(), "rctrl" => "R Ctrl".into(),
+        "lalt" => "L Alt".into(), "ralt" => "R Alt".into(),
+        "lshift" => "L Shift".into(), "rshift" => "R Shift".into(),
+        "capslock" => "Caps".into(), "backspace" => "Bksp".into(),
+        "pageup" => "PgUp".into(), "pagedown" => "PgDn".into(),
+        "numlock" => "NumLk".into(), "scrolllock" => "ScrLk".into(),
+        "insert" => "Ins".into(), "delete" => "Del".into(),
+        _ => name.to_uppercase(),
+    }
+}
+
+pub fn key_capture_modal(
+    ctx: &Context,
+    area_id: &str,
+    title: &str,
+    captured_value: &mut String,
+    buttons: impl FnOnce(&mut Ui, &str),
+) -> bool {
+    let mut just_captured = false;
+    ctx.input(|i| {
+        for ev in &i.events {
+            if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+                if modifiers.ctrl || modifiers.alt || modifiers.mac_cmd {
+                    continue;
+                }
+                if let Some(name) = egui_key_to_name(key) {
+                    *captured_value = name.to_string();
+                    just_captured = true;
+                }
+            }
+        }
+    });
+
+    // egui 0.31 does not emit Key events for Ctrl/Alt/Shift themselves.
+    // Detect modifier-key presses by tracking modifier state changes between frames.
+    let mods = ctx.input(|i| i.modifiers);
+    let id_ctrl = egui::Id::new("__keycap_ctrl");
+    let id_alt = egui::Id::new("__keycap_alt");
+    let id_shift = egui::Id::new("__keycap_shift");
+    let prev_ctrl = ctx.data_mut(|d| {
+        let v = d.get_temp::<bool>(id_ctrl).unwrap_or(false);
+        d.insert_temp(id_ctrl, mods.ctrl);
+        v
+    });
+    let prev_alt = ctx.data_mut(|d| {
+        let v = d.get_temp::<bool>(id_alt).unwrap_or(false);
+        d.insert_temp(id_alt, mods.alt);
+        v
+    });
+    let prev_shift = ctx.data_mut(|d| {
+        let v = d.get_temp::<bool>(id_shift).unwrap_or(false);
+        d.insert_temp(id_shift, mods.shift);
+        v
+    });
+    if mods.ctrl && !prev_ctrl {
+        *captured_value = "ctrl".to_string();
+        just_captured = true;
+    }
+    if mods.alt && !prev_alt {
+        *captured_value = "alt".to_string();
+        just_captured = true;
+    }
+    if mods.shift && !prev_shift {
+        *captured_value = "shift".to_string();
+        just_captured = true;
+    }
+
+    egui::Area::new(egui::Id::new(area_id))
+        .order(egui::Order::Foreground)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            hud_panel(ui, Vec2::new(300.0, 150.0), GOLD_DIM, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(title).font(hud_b(15.0)).color(GOLD));
+                    ui.add_space(10.0);
+                    if captured_value.is_empty() {
+                        paint_glyph(ui.painter(), Rect::from_center_size(
+                            Pos2::new(ui.cursor().center().x, ui.cursor().min.y + 14.0),
+                            Vec2::splat(28.0),
+                        ), Glyph::Keyboard, TEXT_SUB);
+                        ui.add_space(30.0);
+                        ui.label(egui::RichText::new("按下目标按键…").font(hud(13.0)).color(TEXT_SUB));
+                    } else {
+                        let key_name = captured_value.clone();
+                        ui.label(
+                            egui::RichText::new(key_name.to_uppercase())
+                                .font(hud_b(24.0))
+                                .color(OK),
+                        );
+                        ui.add_space(10.0);
+                        buttons(ui, &key_name);
+                    }
+                });
+            });
+        });
+
+    just_captured
 }

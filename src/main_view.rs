@@ -449,6 +449,7 @@ impl H2ACApp {
                 if hud_button(ui, "设热键", Vec2::new(88.0, 26.0), CAT_EQUIP, false).clicked() {
                     self.capturing = Some(idx);
                     self.captured.clear();
+                    self.settings_capture = None;
                 }
                 ui.add_space(4.0);
                 if hud_button(ui, "清 除", Vec2::new(88.0, 26.0), DANGER, true).clicked() {
@@ -768,6 +769,7 @@ impl H2ACApp {
                     if hud_button(ui, "设热键", Vec2::new(ui.available_width(), 26.0), CAT_EQUIP, false).clicked() {
                         self.capturing = Some(slot);
                         self.captured.clear();
+                        self.settings_capture = None;
                         close = true;
                     }
                 });
@@ -792,78 +794,25 @@ impl H2ACApp {
     fn render_capture_modal(&mut self, ctx: &Context) {
         let Some(slot) = self.capturing else { return };
 
-        ctx.input(|i| {
-            for ev in &i.events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
-                    if modifiers.ctrl || modifiers.alt || modifiers.mac_cmd {
-                        return;
-                    }
-                    let n: &str = match key {
-                        Key::F1 => "f1", Key::F2 => "f2", Key::F3 => "f3", Key::F4 => "f4",
-                        Key::F5 => "f5", Key::F6 => "f6", Key::F7 => "f7", Key::F8 => "f8",
-                        Key::F9 => "f9", Key::F10 => "f10", Key::F11 => "f11", Key::F12 => "f12",
-                        Key::Space => "space", Key::Enter => "enter", Key::Tab => "tab",
-                        Key::Backspace => "backspace",
-                        Key::Num0 => "0", Key::Num1 => "1", Key::Num2 => "2", Key::Num3 => "3",
-                        Key::Num4 => "4", Key::Num5 => "5", Key::Num6 => "6", Key::Num7 => "7",
-                        Key::Num8 => "8", Key::Num9 => "9",
-                        Key::A => "a", Key::B => "b", Key::C => "c", Key::D => "d", Key::E => "e",
-                        Key::F => "f", Key::G => "g", Key::H => "h", Key::I => "i", Key::J => "j",
-                        Key::K => "k", Key::L => "l", Key::M => "m", Key::N => "n", Key::O => "o",
-                        Key::P => "p", Key::Q => "q", Key::R => "r", Key::S => "s", Key::T => "t",
-                        Key::U => "u", Key::V => "v", Key::W => "w", Key::X => "x", Key::Y => "y",
-                        Key::Z => "z",
-                        _ => return,
-                    };
-                    self.captured = n.to_string();
+        let title = format!("槽位 {} — 设置快捷键", slot + 1);
+        let mut captured = std::mem::take(&mut self.captured);
+        let app = &mut *self;
+        let _just = key_capture_modal(ctx, "capture", &title, &mut captured, |ui, key_name| {
+            ui.horizontal(|ui| {
+                if hud_button(ui, "确 认", Vec2::new(90.0, 28.0), GOLD, false).clicked() {
+                    app.config
+                        .slot_hotkeys
+                        .insert(slot.to_string(), key_name.to_string());
+                    config::save_config(&app.config);
+                    app.log(LogKind::Info, format!("槽位 {} 快捷键: {}", slot + 1, key_name));
+                    app.capturing = None;
                 }
-            }
-        });
-
-        egui::Area::new(egui::Id::new("capture"))
-            .order(egui::Order::Foreground)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                hud_panel(ui, Vec2::new(300.0, 150.0), GOLD_DIM, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(format!("槽位 {} — 设置快捷键", slot + 1))
-                                .font(hud_b(15.0))
-                                .color(GOLD),
-                        );
-                        ui.add_space(10.0);
-                        if self.captured.is_empty() {
-                            paint_glyph(ui.painter(), Rect::from_center_size(
-                                Pos2::new(ui.cursor().center().x, ui.cursor().min.y + 14.0),
-                                Vec2::splat(28.0),
-                            ), Glyph::Keyboard, TEXT_SUB);
-                            ui.add_space(30.0);
-                            ui.label(egui::RichText::new("按下目标按键…").font(hud(13.0)).color(TEXT_SUB));
-                        } else {
-                            ui.label(
-                                egui::RichText::new(self.captured.to_uppercase())
-                                    .font(hud_b(24.0))
-                                    .color(OK),
-                            );
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                if hud_button(ui, "确 认", Vec2::new(90.0, 28.0), GOLD, false).clicked() {
-                                    self.config
-                                        .slot_hotkeys
-                                        .insert(slot.to_string(), self.captured.clone());
-                                    config::save_config(&self.config);
-                                    self.log(LogKind::Info, format!("槽位 {} 快捷键: {}", slot + 1, self.captured));
-                                    self.capturing = None;
-                                }
-                                if hud_button(ui, "取 消", Vec2::new(90.0, 28.0), TEXT_SUB, false).clicked() {
-                                    self.capturing = None;
-                                }
-                            });
-                        }
-                    });
-                });
+                if hud_button(ui, "取 消", Vec2::new(90.0, 28.0), TEXT_SUB, false).clicked() {
+                    app.capturing = None;
+                }
             });
+        });
+        self.captured = captured;
 
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.capturing = None;
@@ -876,6 +825,30 @@ impl H2ACApp {
         if !self.show_settings {
             return;
         }
+
+        if let Some(ref field) = self.settings_capture.clone() {
+            let title = match field.as_str() {
+                "↑" => "请按下 ↑ 键",
+                "↓" => "请按下 ↓ 键",
+                "←" => "请按下 ← 键",
+                "→" => "请按下 → 键",
+                "stratagem" => "请按下激活键",
+                _ => "按下目标按键",
+            };
+            let just = key_capture_modal(ctx, "settings_capture", title, &mut self.captured, |_, _| {});
+            if just {
+                match field.as_str() {
+                    "stratagem" => self.settings_key = self.captured.clone(),
+                    dir => { self.settings_bindings.insert(dir.to_string(), self.captured.clone()); }
+                }
+                self.settings_capture = None;
+            }
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.settings_capture = None;
+            }
+            return;
+        }
+
         egui::Area::new(egui::Id::new("settings"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
@@ -890,13 +863,23 @@ impl H2ACApp {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(*dir).font(hud(14.0)).color(GOLD_MID));
                             let v = self.settings_bindings.entry(dir.to_string()).or_default();
-                            ui.add(egui::TextEdit::singleline(v).font(hud(13.0)).desired_width(80.0));
+                            let display = format_key_name(v);
+                            if hud_button(ui, &display, Vec2::new(80.0, 24.0), GOLD_MID, false).clicked() {
+                                self.settings_capture = Some(dir.to_string());
+                                self.captured.clear();
+                                self.capturing = None;
+                            }
                         });
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("激活键:").font(hud(13.0)));
-                        ui.add(egui::TextEdit::singleline(&mut self.settings_key).font(hud(13.0)).desired_width(80.0));
+                        let display = format_key_name(&self.settings_key);
+                        if hud_button(ui, &display, Vec2::new(80.0, 24.0), GOLD_MID, false).clicked() {
+                            self.settings_capture = Some("stratagem".into());
+                            self.captured.clear();
+                            self.capturing = None;
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("按键延迟(秒):").font(hud(13.0)));
