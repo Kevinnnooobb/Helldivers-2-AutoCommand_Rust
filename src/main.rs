@@ -325,7 +325,7 @@ fn main() -> Result<(), eframe::Error> {
 
     // 加载应用图标
     let icon = {
-        let icon_bytes = include_bytes!("../assets/icon.png");
+        let icon_bytes = include_bytes!("../assets/icon-removebg.png");
         let img = image::load_from_memory(icon_bytes)
             .ok()
             .map(|i| i.to_rgba8());
