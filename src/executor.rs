@@ -142,14 +142,58 @@ fn is_key_down(vk: u16) -> bool {
     unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000u16) != 0 }
 }
 
-/// 执行战备指令序列
+/// 执行插件战备指令序列（字符串数组版本）
+pub fn execute_plugin(config: &Config, command: &[String]) {
+    let delay = config.key_delay;
+    let pre_delay = config.pre_delay;
+    let stratagem_key = config.stratagem_key.clone();
+    let key_bindings = config.key_bindings.clone();
+
+    let _ = press_key(&stratagem_key);
+    thread::sleep(Duration::from_secs_f64(pre_delay));
+
+    for raw in command.iter() {
+        let mapped = key_bindings.get(raw.as_str()).cloned().unwrap_or_else(|| raw.clone());
+        thread::sleep(Duration::from_secs_f64(delay));
+        let _ = press_key(&mapped);
+        thread::sleep(Duration::from_secs_f64(delay));
+        let _ = release_key(&mapped);
+    }
+
+    let _ = release_key(&stratagem_key);
+
+    let modifiers: [(u16, &str); 4] = [
+        (VK_LSHIFT.0, "left shift"),
+        (VK_RSHIFT.0, "right shift"),
+        (VK_LMENU.0, "left alt"),
+        (VK_RMENU.0, "right alt"),
+    ];
+    let mut released: Vec<String> = Vec::new();
+    for (vk, name) in &modifiers {
+        if is_key_down(*vk) {
+            let (sc, ext) = lookup_scancode(name).unwrap();
+            send_key_event(sc, ext, true);
+            released.push(name.to_string());
+        }
+    }
+    thread::sleep(Duration::from_millis(5));
+    for name in &released {
+        let (sc, ext) = lookup_scancode(name).unwrap();
+        send_key_event(sc, ext, false);
+    }
+}
+
+/// 执行战备指令序列（内置版）
 pub fn execute_stratagem(s: &Stratagem, config: &Config) {
     let delay = config.key_delay;
+    let pre_delay = config.pre_delay;
     let stratagem_key = config.stratagem_key.clone();
     let key_bindings = config.key_bindings.clone();
 
     // 按下战备激活键
     let _ = press_key(&stratagem_key);
+    // 等待游戏弹出指令面板
+    thread::sleep(Duration::from_secs_f64(pre_delay));
 
     // 依次输入方向指令
     for dir in s.command.iter() {

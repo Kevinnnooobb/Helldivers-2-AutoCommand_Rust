@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use crate::stratagems::PluginStratagem;
 
 pub const SLOT_COUNT: usize = 10;
 
@@ -29,6 +30,9 @@ pub struct Config {
     pub stratagem_key: String,
     #[serde(default = "default_key_delay")]
     pub key_delay: f64,
+    /// 激活键按下后等待指令面板弹出的延迟（秒）
+    #[serde(default = "default_pre_delay")]
+    pub pre_delay: f64,
     #[serde(default)]
     pub slot_hotkeys: HashMap<String, String>,
     #[serde(default = "empty_loadout")]
@@ -37,6 +41,9 @@ pub struct Config {
     pub listening_enabled: bool,
     #[serde(default)]
     pub last_profile: String,
+    /// 战备名 → 新分类名（运行时修改分类的持久覆盖）
+    #[serde(default)]
+    pub category_overrides: HashMap<String, String>,
 }
 
 fn default_key_bindings() -> HashMap<String, String> {
@@ -49,7 +56,8 @@ fn default_key_bindings() -> HashMap<String, String> {
 }
 
 fn default_stratagem_key() -> String { "ctrl".into() }
-fn default_key_delay() -> f64 { 0.05 }
+fn default_key_delay() -> f64 { 0.08 }
+fn default_pre_delay() -> f64 { 0.12 }
 fn empty_loadout() -> Vec<Option<usize>> { vec![None; SLOT_COUNT] }
 fn default_true() -> bool { true }
 
@@ -59,10 +67,12 @@ impl Default for Config {
             key_bindings: default_key_bindings(),
             stratagem_key: default_stratagem_key(),
             key_delay: default_key_delay(),
+            pre_delay: default_pre_delay(),
             slot_hotkeys: HashMap::new(),
             loadout: empty_loadout(),
             listening_enabled: true,
             last_profile: String::new(),
+            category_overrides: HashMap::new(),
         }
     }
 }
@@ -98,6 +108,9 @@ pub fn save_config(config: &Config) {
 pub struct Profile {
     pub loadout: Vec<Option<usize>>,
     pub slot_hotkeys: HashMap<String, String>,
+    /// 插件战备槽位映射（key=slot index, value=战备序列化数据）
+    #[serde(default)]
+    pub plugin_slots: HashMap<String, PluginStratagem>,
 }
 
 pub fn list_profiles() -> Vec<String> {
@@ -121,12 +134,13 @@ pub fn list_profiles() -> Vec<String> {
     names
 }
 
-pub fn save_profile(name: &str, loadout: &[Option<usize>], hotkeys: &HashMap<String, String>) {
+pub fn save_profile(name: &str, loadout: &[Option<usize>], hotkeys: &HashMap<String, String>, plugin_slots: &HashMap<String, PluginStratagem>) {
     let dir = profiles_dir();
     let _ = fs::create_dir_all(&dir);
     let profile = Profile {
         loadout: loadout.to_vec(),
         slot_hotkeys: hotkeys.clone(),
+        plugin_slots: plugin_slots.iter().map(|(k,v)| (k.clone(), v.clone())).collect(),
     };
     let path = dir.join(format!("{name}.json"));
     let _ = fs::write(&path, serde_json::to_string_pretty(&profile).unwrap_or_default());
