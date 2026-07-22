@@ -2,8 +2,4 @@
 *.exe
 *.pdb
 panic.log
-AGENTS.md
-CONTEXT.md
-IMPLEMENTATION-PLAN.md
-PYTHON-REFERENCE.md
-UI-REFACTOR-STATUS.md
+/docs
