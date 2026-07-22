@@ -269,9 +269,6 @@ impl H2ACApp {
 
 impl eframe::App for H2ACApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        #[cfg(debug_assertions)]
-        ctx.set_debug_on_hover(true); // 临时：命中测试调试
-
         // 全局热键事件 → 执行 + 闪光（记录真实触发时刻）
         if let Some(ref rx) = self.hotkey_rx {
             if let Ok(s) = rx.try_recv() {
