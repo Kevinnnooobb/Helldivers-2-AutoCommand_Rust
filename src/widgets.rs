@@ -430,9 +430,7 @@ pub fn key_capture_modal(
     ctx.input(|i| {
         for ev in &i.events {
             if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
-                if modifiers.ctrl || modifiers.alt || modifiers.mac_cmd {
-                    continue;
-                }
+                if modifiers.ctrl || modifiers.alt || modifiers.mac_cmd { continue; }
                 if let Some(name) = egui_key_to_name(key) {
                     *captured_value = name.to_string();
                     just_captured = true;
