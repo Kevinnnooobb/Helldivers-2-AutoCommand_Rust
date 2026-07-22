@@ -85,7 +85,7 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
                 }
             });
         if sel != app.model.current_profile && !sel.is_empty() {
-            app.load_profile_data(&sel);
+            app.model.current_profile = sel;
         }
         ui.label(egui::RichText::new("PROFILE").font(hud(10.0)).color(TEXT_DIM));
     });

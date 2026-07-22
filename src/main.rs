@@ -8,6 +8,7 @@ mod executor;
 mod hotkey;
 mod icons;
 mod main_view;
+mod model;
 mod plugin;
 mod state;
 mod stratagems;
@@ -19,16 +20,14 @@ mod wiki_fetcher;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 
-use config::{list_profiles, load_config, save_config, Config, SLOT_COUNT};
+use config::{list_profiles, load_config, save_config, SLOT_COUNT};
 use eframe::egui::{self, Context, Pos2};
-use executor::execute_stratagem;
 use icons::IconStore;
 use state::{
     AppModel, CaptureState, CreatorState, LibraryState, PluginData, WikiState,
 };
-use stratagems::{command_to_string, dir_to_arrow, get_categories, OwnedStratagem, Stratagem, StratagemRef, STRATAGEMS};
+use stratagems::{get_categories, STRATAGEMS};
 use theme::{MAIN_H, MAIN_W};
 
 // ─── 日志 ───
@@ -180,48 +179,6 @@ impl H2ACApp {
         }
     }
 
-    pub fn execute_slot(&mut self, slot: usize) {
-        if let Some(p) = self.model.plugin_slots.get(&slot) {
-            let log_msg = format!("执行 {} [{}] {}", p.name, p.model, p.command.join(""));
-            let cmd = p.command.clone();
-            self.log(LogKind::Exec, log_msg);
-            self.model.flash.insert(slot, 0.0);
-            let cg = self.model.config.clone();
-            thread::spawn(move || executor::execute_plugin(&cg, &cmd));
-            return;
-        }
-        if let Some(idx) = self.model.slots[slot] {
-            if idx != usize::MAX {
-                if let Some(s) = STRATAGEMS.get(idx) {
-                    self.log(LogKind::Exec, format!("执行 {} [{}] {}", s.name, s.model, command_to_string(&s.command)));
-                    self.model.flash.insert(slot, 0.0);
-                    let sc = s.clone();
-                    let cg = self.model.config.clone();
-                    thread::spawn(move || execute_stratagem(&sc, &cg));
-                }
-            }
-        }
-    }
-
-    pub fn assign_stratagem(&mut self, s: &'static Stratagem) {
-        let Some(slot) = self.model.armed else {
-            self.log(LogKind::Info, format!("先点选一个槽位，再装入 {}", s.name));
-            return;
-        };
-        if let Some(idx) = STRATAGEMS.iter().position(|x| x.name == s.name && x.model == s.model) {
-            self.set_slot(slot, idx);
-            self.log(LogKind::Info, format!("槽位 {} ← {} [{}]", slot + 1, s.name, s.model));
-            self.model.armed = (0..SLOT_COUNT)
-                .map(|i| (slot + 1 + i) % SLOT_COUNT)
-                .find(|&i| self.model.slots[i].is_none());
-            if let Some(a) = self.model.armed {
-                self.model.detail_slot = Some(a);
-            } else {
-                self.model.detail_slot = Some(slot);
-            }
-        }
-    }
-
     pub fn open_settings(&mut self) {
         self.settings_bindings = self.model.config.key_bindings.clone();
         self.settings_key = self.model.config.stratagem_key.clone();
@@ -280,214 +237,6 @@ impl H2ACApp {
         self.model.profile_names = list_profiles();
     }
 
-    pub fn set_slot(&mut self, slot: usize, idx: usize) {
-        self.model.slots[slot] = Some(idx);
-        self.model.config.loadout[slot] = Some(idx);
-        save_config(&self.model.config);
-    }
-
-    pub fn clear_slot(&mut self, slot: usize) {
-        self.model.slots[slot] = None;
-        self.model.plugin_slots.remove(&slot);
-        self.model.config.loadout[slot] = None;
-        self.model.config.slot_hotkeys.remove(&slot.to_string());
-        save_config(&self.model.config);
-    }
-
-    /// 统合内置 + 插件战备的分类列表
-    pub fn lib_categories(&self) -> Vec<String> {
-        let mut cats: Vec<String> = self.library.categories.clone();
-        for p in &self.plugins.stratagems {
-            if !cats.contains(&p.category) { cats.push(p.category.clone()); }
-        }
-        // 覆盖目标分类也加入列表
-        for cat in self.model.config.category_overrides.values() {
-            if !cats.contains(cat) { cats.push(cat.clone()); }
-        }
-        cats
-    }
-
-    /// 查询战备的有效分类（覆盖优先）
-    pub fn effective_category(&self, name: &str, default_cat: &str) -> String {
-        self.model.config.category_overrides.get(name)
-            .cloned()
-            .unwrap_or_else(|| default_cat.to_string())
-    }
-
-    /// 设置战备分类覆盖并持久化
-    pub fn set_category_override(&mut self, name: &str, category: &str) {
-        self.model.config.category_overrides.insert(name.to_string(), category.to_string());
-        save_config(&self.model.config);
-        // 同步到插件 JSON 文件（如果是插件战备）
-        self.sync_plugin_category(name, category);
-    }
-
-    /// 清除覆盖
-    pub fn clear_category_override(&mut self, name: &str) {
-        self.model.config.category_overrides.remove(name);
-        save_config(&self.model.config);
-    }
-
-    /// 同步插件 JSON 文件中该战备的分类
-    fn sync_plugin_category(&mut self, name: &str, new_cat: &str) {
-        for p in &mut self.plugins.stratagems {
-            if p.name == name || p.name == format!("{name} (Wiki)") {
-                p.category = new_cat.to_string();
-                // 尝试写回源 JSON 文件
-                let dir = plugin::plugins_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                // 搜索匹配的 JSON 文件
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().map_or(true, |e| e != "json") { continue; }
-                        if let Ok(data) = std::fs::read_to_string(&path) {
-                            if data.contains(&format!("\"name\": \"{}\"", p.name)) {
-                                if let Ok(mut m) = serde_json::from_str::<crate::stratagems::PluginManifest>(&data) {
-                                    for s in &mut m.stratagems {
-                                        if s.name == p.name { s.category = new_cat.to_string(); }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    pub fn lib_by_category(&self, cat: &str) -> Vec<StratagemRef> {
-        let mut out: Vec<StratagemRef> = stratagems::get_by_category(cat)
-            .into_iter().map(StratagemRef::Base).collect();
-        for p in &self.plugins.stratagems {
-            if p.category == cat { out.push(StratagemRef::Plugin(p)); }
-        }
-        out
-    }
-
-    pub fn lib_by_category_owned(&self, cat: &str) -> Vec<OwnedStratagem> {
-        let mut out: Vec<OwnedStratagem> = stratagems::get_by_category(cat)
-            .into_iter().map(OwnedStratagem::Base).collect();
-        for p in &self.plugins.stratagems {
-            if p.category == cat { out.push(OwnedStratagem::Plugin(p.clone())); }
-        }
-        out
-    }
-
-    pub fn lib_search(&self, query: &str) -> Vec<StratagemRef> {
-        let q = query.trim();
-        if q.is_empty() { return Vec::new(); }
-        let mut out: Vec<StratagemRef> = stratagems::search(q)
-            .into_iter().map(StratagemRef::Base).collect();
-        for p in &self.plugins.stratagems {
-            if p.name.contains(q) || p.model.contains(q) { out.push(StratagemRef::Plugin(p)); }
-        }
-        out
-    }
-
-    pub fn lib_search_owned(&self, query: &str) -> Vec<OwnedStratagem> {
-        let q = query.trim();
-        if q.is_empty() { return Vec::new(); }
-        let mut out: Vec<OwnedStratagem> = stratagems::search(q)
-            .into_iter().map(OwnedStratagem::Base).collect();
-        for p in &self.plugins.stratagems {
-            if p.name.contains(q) || p.model.contains(q) { out.push(OwnedStratagem::Plugin(p.clone())); }
-        }
-        out
-    }
-
-    pub fn assign_stratagem_ref(&mut self, s: &StratagemRef) {
-        match s {
-            StratagemRef::Base(base) => self.assign_stratagem(base),
-            StratagemRef::Plugin(p) => {
-                let Some(slot) = self.model.armed else {
-                    self.log(LogKind::Info, format!("先点选槽位再装入: {}", p.name));
-                    return;
-                };
-                self.model.plugin_slots.insert(slot, (*p).clone());
-                self.model.slots[slot] = Some(usize::MAX);
-                self.log(LogKind::Info, format!("槽位 {} <- {} (插件)", slot + 1, p.name));
-                self.model.armed = (0..SLOT_COUNT)
-                    .map(|i| (slot + 1 + i) % SLOT_COUNT)
-                    .find(|&i| self.model.slots[i].is_none() && !self.model.plugin_slots.contains_key(&i));
-                if let Some(a) = self.model.armed { self.model.detail_slot = Some(a); }
-                else { self.model.detail_slot = Some(slot); }
-            }
-        }
-    }
-
-    /// 删除插件战备并同步 JSON
-    pub fn delete_plugin_stratagem(&mut self, name: &str) {
-        self.plugins.stratagems.retain(|p| p.name != name);
-        let dir = plugin::plugins_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(true, |e| e != "json") { continue; }
-                if let Ok(data) = std::fs::read_to_string(&path) {
-                    if data.contains(&format!("\"name\": \"{}\"", name)) {
-                        if let Ok(mut m) = serde_json::from_str::<crate::stratagems::PluginManifest>(&data) {
-                            let before = m.stratagems.len();
-                            m.stratagems.retain(|s| s.name != name);
-                            if m.stratagems.len() < before {
-                                let _ = std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap_or_default());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        self.log(LogKind::Warn, format!("已删除: {name}"));
-    }
-
-    /// 槽位是否已装填（内置或插件）
-    pub fn slot_filled(&self, idx: usize) -> bool {
-        self.model.slots[idx].is_some() || self.model.plugin_slots.contains_key(&idx)
-    }
-
-    /// 获取槽位战备名（插件优先）
-    pub fn slot_name(&self, idx: usize) -> Option<String> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { Some(p.name.clone()) }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.name.to_string()) }) }
-    }
-
-    pub fn slot_icon(&self, idx: usize) -> Option<&str> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { Some(&p.icon) }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.icon) }) }
-    }
-
-    pub fn slot_command(&self, idx: usize) -> Vec<&str> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { p.command.iter().map(|c| dir_to_arrow(c.as_str())).collect() }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.command.to_vec()) }).unwrap_or_default() }
-    }
-
-    pub fn slot_category(&self, idx: usize) -> Option<String> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { Some(p.category.clone()) }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.category.to_string()) }) }
-    }
-
-    pub fn start_wiki_fetch(&mut self) {
-        let (rx, has_cache) = wiki_fetcher::start_fetch();
-        self.wiki.fetch_rx = Some(rx);
-        self.wiki.cache_exists = has_cache;
-        self.wiki.fetch_status = "连接中…".into();
-    }
-
-    pub fn load_profile_data(&mut self, name: &str) {
-        if let Some(pr) = config::load_profile(name) {
-            self.model.slots = pr.loadout;
-            self.model.plugin_slots = pr.plugin_slots.iter().map(|(k,v)| (k.parse().unwrap_or(0), v.clone())).collect();
-            self.model.config.slot_hotkeys = pr.slot_hotkeys;
-            self.model.config.last_profile = name.to_string();
-            config::save_config(&self.model.config);
-            self.model.current_profile = name.to_string();
-            self.model.armed = None;
-            self.model.detail_slot = None;
-            self.log(LogKind::Info, format!("已加载 Profile: {name}"));
-        }
-    }
 }
 
 impl eframe::App for H2ACApp {
@@ -574,6 +323,22 @@ fn main() -> Result<(), eframe::Error> {
             "未以管理员身份运行。如果游戏内按键无反应，请右键 h2ac-rs.exe → 以管理员身份运行。");
     }
 
+    // 加载应用图标
+    let icon = {
+        let icon_bytes = include_bytes!("../assets/icon.png");
+        let img = image::load_from_memory(icon_bytes)
+            .ok()
+            .map(|i| i.to_rgba8());
+        img.map(|rgba| {
+            let (w, h) = (rgba.width() as u32, rgba.height() as u32);
+            egui::IconData {
+                rgba: rgba.into_raw(),
+                width: w,
+                height: h,
+            }
+        })
+    };
+
     eframe::run_native(
         "H2AC-RS",
         eframe::NativeOptions {
@@ -581,7 +346,8 @@ fn main() -> Result<(), eframe::Error> {
                 .with_inner_size([MAIN_W, MAIN_H])
                 .with_resizable(false)
                 .with_decorations(false)
-                .with_title("H2AC-RS 绝地潜兵2 战备终端"),
+                .with_title("H2AC-RS 绝地潜兵2 战备终端")
+                .with_icon(icon.map(std::sync::Arc::new).unwrap_or_default()),
             ..Default::default()
         },
         Box::new(|cc| Ok(Box::new(H2ACApp::new(&cc.egui_ctx)))),
