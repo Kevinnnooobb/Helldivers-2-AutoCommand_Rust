@@ -4,6 +4,7 @@
 > 供后续会话/代理接续工作。
 >
 > **进度更新（最新）**：
+>
 > - ✅ **详情条布局重叠已修复**（图标 96 | 文字列 190 | 箭头区居中 | 按钮列 88 显式分区，
 >   弃用 right_to_left；另见 `render_detail` 当前实现）
 > - ✅ **调试代码已全部清理**（红框/DBG 日志/debug_on_hover 均已移除；panic hook 保留）
@@ -188,11 +189,7 @@ ctx.set_debug_on_hover(true); // 临时：命中测试调试 — 修复后删除
 7. **release 构建**：`cargo build --release`（lto=fat 编译较慢），确认体积与运行。
 8. **`.gitignore`**：评估是否加入 `panic.log`、`assets/`（或保留入库以便直接编译）。
 9. **抛光项**：列表行长名称截断（fit_font 到最小字号后仍超宽时截断加省略号）；
-   详情条空态文案；紧凑条热键角标在有绑定时的截屏确认。
-
----
-
-## 7. 环境备忘
+   详情条空态文案；紧凑条热键角标在有绑定时的截屏确认。7. 环境备忘
 
 - 本机 GitHub 直连不稳定；raw.githubusercontent / cdn.jsdelivr.net 可直连；
   本地代理 127.0.0.1:7897 但对 curl schannel 不友好。图标/字体均经 jsdelivr 获取。

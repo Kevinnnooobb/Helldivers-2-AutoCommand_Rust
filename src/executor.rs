@@ -24,14 +24,25 @@ static SCANCODE_MAP: LazyLock<HashMap<&'static str, ScanData>> = LazyLock::new(|
     m.insert("→", (0x4D, true));
     m.insert("ctrl", (0x1D, false));
     m.insert("left ctrl", (0x1D, false));
+    m.insert("lctrl", (0x1D, false));
     m.insert("right ctrl", (0x1D, true));
+    m.insert("rctrl", (0x1D, true));
     m.insert("alt", (0x38, false));
     m.insert("left alt", (0x38, false));
+    m.insert("lalt", (0x38, false));
     m.insert("right alt", (0x38, true));
+    m.insert("ralt", (0x38, true));
     m.insert("shift", (0x2A, false));
     m.insert("left shift", (0x2A, false));
+    m.insert("lshift", (0x2A, false));
     m.insert("right shift", (0x36, false));
+    m.insert("rshift", (0x36, false));
     m.insert("esc", (0x01, false));
+    m.insert("escape", (0x01, false));
+    m.insert("up", (0x48, true));
+    m.insert("down", (0x50, true));
+    m.insert("left", (0x4B, true));
+    m.insert("right", (0x4D, true));
     m.insert("f1", (0x3B, false)); m.insert("f2", (0x3C, false));
     m.insert("f3", (0x3D, false)); m.insert("f4", (0x3E, false));
     m.insert("f5", (0x3F, false)); m.insert("f6", (0x40, false));
@@ -42,6 +53,13 @@ static SCANCODE_MAP: LazyLock<HashMap<&'static str, ScanData>> = LazyLock::new(|
     m.insert("enter", (0x1C, false));
     m.insert("tab", (0x0F, false));
     m.insert("backspace", (0x0E, false));
+    m.insert("insert", (0x52, true));
+    m.insert("delete", (0x53, true));
+    m.insert("home", (0x47, true));
+    m.insert("end", (0x4F, true));
+    m.insert("pageup", (0x49, true));
+    m.insert("pagedown", (0x51, true));
+    m.insert("capslock", (0x3A, false));
     let digits: [(u16, &str); 10] = [
         (0x02, "1"), (0x03, "2"), (0x04, "3"), (0x05, "4"), (0x06, "5"),
         (0x07, "6"), (0x08, "7"), (0x09, "8"), (0x0A, "9"), (0x0B, "0"),
