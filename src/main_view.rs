@@ -380,82 +380,93 @@ impl H2ACApp {
             let s = &STRATAGEMS[self.slots[idx].unwrap()];
             let accent = category_color(s.category);
 
-            ui.horizontal(|ui| {
-                // 大图标
-                let (ir, _) = ui.allocate_exact_size(Vec2::splat(96.0), Sense::hover());
-                let ir = Rect::from_center_size(ir.center(), Vec2::splat(96.0));
-                paint_chamfer(ui.painter(), ir, 8.0, BG_DEEP, Stroke::new(1.0, accent.gamma_multiply(0.5)));
-                if let Some(tex) = self.icons.get(s.icon) {
-                    ui.painter().image(
-                        tex.id(),
-                        ir.shrink(10.0),
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                }
-                ui.add_space(14.0);
+            let content = ui.available_rect_before_wrap();
+            let h = content.height();
 
-                // 名称 / 型号 / 描述
-                ui.vertical(|ui| {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(s.name).font(hud_b(22.0)).color(TEXT));
-                    ui.label(
-                        egui::RichText::new(format!("{} · {}", s.model, s.category))
-                            .font(hud(12.0))
-                            .color(accent),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(s.description)
-                            .font(hud(12.0))
-                            .color(TEXT_SUB),
-                    );
-                    // 热键
-                    let hk = self
-                        .config
-                        .slot_hotkeys
-                        .get(&idx.to_string())
-                        .map(|h| h.to_uppercase())
-                        .unwrap_or_else(|| "未绑定".into());
-                    ui.label(
-                        egui::RichText::new(format!("快捷键 {hk}"))
-                            .font(hud(11.0))
-                            .color(TEXT_DIM),
-                    );
-                });
-                ui.add_space(10.0);
+            let icon_area = Rect::from_min_size(content.min, Vec2::new(96.0, h));
+            let text_area = Rect::from_min_size(
+                Pos2::new(icon_area.right(), content.top()),
+                Vec2::new(190.0, h),
+            );
+            let btn_area = Rect::from_min_size(
+                Pos2::new(content.right() - 88.0, content.top()),
+                Vec2::new(88.0, h),
+            );
+            let arrow_area = Rect::from_min_max(
+                Pos2::new(text_area.right(), content.top()),
+                Pos2::new(btn_area.left(), content.bottom()),
+            );
 
-                // 大箭头串 + 操作按钮
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.vertical(|ui| {
-                        if hud_button(ui, "执 行", Vec2::new(88.0, 34.0), GOLD, false).clicked() {
-                            self.execute_slot(idx);
-                        }
-                        ui.add_space(4.0);
-                        if hud_button(ui, "设热键", Vec2::new(88.0, 26.0), CAT_EQUIP, false).clicked() {
-                            self.capturing = Some(idx);
-                            self.captured.clear();
-                        }
-                        ui.add_space(4.0);
-                        if hud_button(ui, "清 除", Vec2::new(88.0, 26.0), DANGER, true).clicked() {
-                            self.clear_slot(idx);
-                            if self.armed == Some(idx) {
-                                self.armed = None;
-                            }
-                            self.log(LogKind::Warn, format!("槽位 {} 已清除", idx + 1));
-                        }
-                    });
-                    ui.add_space(16.0);
-                    // 大箭头
-                    let ar = ui.available_rect_before_wrap();
-                    let aw = arrow_strip_w(&s.command, 18.0, 6.0);
-                    let start = Pos2::new(
-                        (ar.left() + ar.right() - aw) / 2.0,
-                        ar.center().y - 9.0,
-                    );
-                    arrow_strip(ui.painter(), start, &s.command, 18.0, 6.0, GOLD);
-                });
+            // ---- 图标 ----
+            let ir = Rect::from_center_size(icon_area.center(), Vec2::splat(80.0));
+            paint_chamfer(ui.painter(), ir, 8.0, BG_DEEP, Stroke::new(1.0, accent.gamma_multiply(0.5)));
+            if let Some(tex) = self.icons.get(s.icon) {
+                ui.painter().image(
+                    tex.id(),
+                    ir.shrink(10.0),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+
+            // ---- 文字列 ----
+            let mut text_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_area));
+            text_ui.vertical(|ui| {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(s.name).font(hud_b(22.0)).color(TEXT));
+                ui.label(
+                    egui::RichText::new(format!("{} · {}", s.model, s.category))
+                        .font(hud(12.0))
+                        .color(accent),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(s.description)
+                        .font(hud(12.0))
+                        .color(TEXT_SUB),
+                );
+                let hk = self
+                    .config
+                    .slot_hotkeys
+                    .get(&idx.to_string())
+                    .map(|h| h.to_uppercase())
+                    .unwrap_or_else(|| "未绑定".into());
+                ui.label(
+                    egui::RichText::new(format!("快捷键 {hk}"))
+                        .font(hud(11.0))
+                        .color(TEXT_DIM),
+                );
             });
+
+            // ---- 按钮列 ----
+            let mut btn_ui = ui.new_child(egui::UiBuilder::new().max_rect(btn_area));
+            btn_ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                if hud_button(ui, "执 行", Vec2::new(88.0, 34.0), GOLD, false).clicked() {
+                    self.execute_slot(idx);
+                }
+                ui.add_space(4.0);
+                if hud_button(ui, "设热键", Vec2::new(88.0, 26.0), CAT_EQUIP, false).clicked() {
+                    self.capturing = Some(idx);
+                    self.captured.clear();
+                }
+                ui.add_space(4.0);
+                if hud_button(ui, "清 除", Vec2::new(88.0, 26.0), DANGER, true).clicked() {
+                    self.clear_slot(idx);
+                    if self.armed == Some(idx) {
+                        self.armed = None;
+                    }
+                    self.log(LogKind::Warn, format!("槽位 {} 已清除", idx + 1));
+                }
+            });
+
+            // ---- 大箭头（居中于箭头区） ----
+            let aw = arrow_strip_w(&s.command, 18.0, 6.0);
+            let start = Pos2::new(
+                arrow_area.center().x - aw / 2.0,
+                arrow_area.center().y - 9.0,
+            );
+            arrow_strip(ui.painter(), start, &s.command, 18.0, 6.0, GOLD);
         });
     }
 
@@ -500,7 +511,6 @@ impl H2ACApp {
                 );
                 let resp = ui.interact(row, ui.id().with(("cat", i)), Sense::click());
                 let p = ui.painter_at(row);
-                p.rect_filled(row, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(255, 0, 0, 40)); // DBG
                 let sel = self.lib_search.is_empty() && self.lib_category == *cat;
                 let accent = category_color(cat);
                 if resp.hovered() || sel {
@@ -523,7 +533,6 @@ impl H2ACApp {
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }
                 if resp.clicked() {
-                    self.log(LogKind::Info, format!("DBG 分类切换 → {}", cat));
                     self.lib_category = cat.to_string();
                     self.lib_search.clear();
                 }
@@ -591,10 +600,31 @@ impl H2ACApp {
             format!("{} · {}", s.name, cat_short(s.category))
         };
         let font = fit_font(&p, &label, width - 160.0, &[13.0, 11.0], false);
+        let max_w = width - 160.0;
+        let display: std::borrow::Cow<'_, str> = {
+            let mut s = String::new();
+            let mut fits = true;
+            for ch in label.chars() {
+                let test = format!("{s}{ch}…");
+                if p.layout_no_wrap(test.clone(), font.clone(), TEXT).size().x <= max_w {
+                    s.push(ch);
+                } else {
+                    fits = false;
+                    break;
+                }
+            }
+            if fits && !label.is_empty() {
+                std::borrow::Cow::Owned(label)
+            } else if s.is_empty() {
+                std::borrow::Cow::Borrowed("…")
+            } else {
+                std::borrow::Cow::Owned(format!("{s}…"))
+            }
+        };
         p.text(
             Pos2::new(rect.left() + 40.0, rect.center().y),
             Align2::LEFT_CENTER,
-            &label,
+            &display,
             font,
             if in_armed { GOLD } else { TEXT },
         );

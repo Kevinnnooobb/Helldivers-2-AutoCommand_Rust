@@ -353,7 +353,8 @@ pub fn hud_panel(
     border: Color32,
     add: impl FnOnce(&mut Ui),
 ) -> Rect {
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let rect = Rect::from_min_size(ui.cursor().min, size);
+    ui.advance_cursor_after_rect(rect);
     paint_chamfer(ui.painter(), rect, CHAMFER, BG_PANEL, Stroke::new(1.0, border));
     corner_brackets(ui.painter(), rect.shrink(3.0), 7.0, GOLD_DIM);
     let mut child = ui.new_child(
