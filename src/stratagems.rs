@@ -355,7 +355,7 @@ impl OwnedStratagem {
     pub fn icon(&self) -> &str {
         match self { OwnedStratagem::Base(s) => s.icon, OwnedStratagem::Plugin(s) => &s.icon }
     }
-    pub fn as_ref(&self) -> StratagemRef {
+    pub fn as_ref(&self) -> StratagemRef<'_> {
         match self {
             OwnedStratagem::Base(s) => StratagemRef::Base(s),
             OwnedStratagem::Plugin(s) => StratagemRef::Plugin(s),

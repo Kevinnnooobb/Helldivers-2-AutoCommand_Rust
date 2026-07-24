@@ -4,7 +4,7 @@ use crate::theme::*;
 use crate::widgets::*;
 use crate::LogKind;
 
-pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context) {
+pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
     if !app.stratagem_settings.visible {
         return;
     }
@@ -14,16 +14,16 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context) {
         .order(egui::Order::Foreground)
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            hud_panel(ui, Vec2::new(420.0, 400.0), GOLD_DIM, |ui| {
-                ui.label(egui::RichText::new("战备设置").font(hud_b(17.0)).color(GOLD));
-                ui.label(egui::RichText::new("STRATAGEM SETTINGS").font(hud(10.0)).color(TEXT_DIM));
+            hud_panel(ui, Vec2::new(m.modal_stratagem_w(), m.modal_stratagem_h()), m, GOLD_DIM, |ui| {
+                ui.label(egui::RichText::new("战备设置").font(m.hud_b(17.0)).color(GOLD));
+                ui.label(egui::RichText::new("STRATAGEM SETTINGS").font(m.hud(10.0)).color(TEXT_DIM));
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("名称:").font(hud(13.0)).color(TEXT));
+                    ui.label(egui::RichText::new("名称:").font(m.hud(13.0)).color(TEXT));
                     ui.add(
                         egui::TextEdit::singleline(&mut app.stratagem_settings.name)
-                            .font(hud(13.0))
+                            .font(m.hud(13.0))
                             .desired_width(280.0)
                             .interactive(app.stratagem_settings.is_plugin),
                     );
@@ -31,20 +31,20 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context) {
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("图标 key:").font(hud(13.0)).color(TEXT));
+                    ui.label(egui::RichText::new("图标 key:").font(m.hud(13.0)).color(TEXT));
                     ui.add(
                         egui::TextEdit::singleline(&mut app.stratagem_settings.icon_key)
-                            .font(hud(13.0))
+                            .font(m.hud(13.0))
                             .desired_width(280.0),
                     );
                 });
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("描述:").font(hud(13.0)).color(TEXT));
+                    ui.label(egui::RichText::new("描述:").font(m.hud(13.0)).color(TEXT));
                     ui.add(
                         egui::TextEdit::multiline(&mut app.stratagem_settings.description)
-                            .font(hud(13.0))
+                            .font(m.hud(13.0))
                             .desired_width(280.0)
                             .desired_rows(3),
                     );
@@ -52,10 +52,10 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context) {
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("指令序列:").font(hud(13.0)).color(TEXT));
+                    ui.label(egui::RichText::new("指令序列:").font(m.hud(13.0)).color(TEXT));
                     ui.add(
                         egui::TextEdit::singleline(&mut app.stratagem_settings.command_text)
-                            .font(hud(13.0))
+                            .font(m.hud(13.0))
                             .desired_width(280.0)
                             .hint_text("↑, ↓, ←, →"),
                     );
@@ -63,13 +63,13 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context) {
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("分类:").font(hud(13.0)).color(TEXT));
+                    ui.label(egui::RichText::new("分类:").font(m.hud(13.0)).color(TEXT));
                     egui::ComboBox::from_id_salt("stratagem_set_cat")
                         .width(280.0)
-                        .selected_text(egui::RichText::new(super::cat_label(&app.stratagem_settings.category)).font(hud(13.0)).color(category_color(&app.stratagem_settings.category)))
+                        .selected_text(egui::RichText::new(super::cat_label(&app.stratagem_settings.category)).font(m.hud(13.0)).color(category_color(&app.stratagem_settings.category)))
                         .show_ui(ui, |ui| {
                             for cat in &app.lib_categories() {
-                                if ui.selectable_label(false, egui::RichText::new(super::cat_label(cat)).font(hud(12.0))).clicked() {
+                                if ui.selectable_label(false, egui::RichText::new(super::cat_label(cat)).font(m.hud(12.0))).clicked() {
                                     app.stratagem_settings.category = cat.clone();
                                 }
                             }
@@ -78,7 +78,7 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context) {
                 ui.add_space(14.0);
 
                 ui.horizontal(|ui| {
-                    if hud_button(ui, "保 存", Vec2::new(100.0, 30.0), GOLD, false).clicked() {
+                    if hud_button(ui, "保 存", Vec2::new(100.0, 30.0), m, GOLD, false).clicked() {
                         let name = app.stratagem_settings.name.clone();
                         let icon = app.stratagem_settings.icon_key.clone();
                         let desc = app.stratagem_settings.description.clone();
@@ -140,7 +140,7 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context) {
                         app.log(LogKind::Info, format!("战备设置已保存: {}", name));
                         close = true;
                     }
-                    if hud_button(ui, "取 消", Vec2::new(100.0, 30.0), TEXT_SUB, false).clicked() {
+                    if hud_button(ui, "取 消", Vec2::new(100.0, 30.0), m, TEXT_SUB, false).clicked() {
                         app.stratagem_settings.visible = false;
                         close = true;
                     }

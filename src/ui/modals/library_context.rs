@@ -5,25 +5,25 @@ use crate::widgets::*;
 use crate::stratagems::{STRATAGEMS, StratagemRef};
 use crate::LogKind;
 
-pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context) {
+pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
     let Some(ref lib_ctx) = app.library_context.clone() else { return };
 
-    let num_rows = 1 // category ComboBox
+    let num_rows = 1
         + if app.model.armed.is_some() { 1 } else { 0 }
-        + 1 // settings
-        + if lib_ctx.is_plugin { 1 } else { 0 }; // delete
-    let size = Vec2::new(160.0, num_rows as f32 * 30.0 + 18.0);
+        + 1
+        + if lib_ctx.is_plugin { 1 } else { 0 };
+    let size = Vec2::new(m.modal_lib_ctx_w(), num_rows as f32 * m.modal_row_h() + m.modal_pad_y());
 
     let mut close = false;
     let area = egui::Area::new(egui::Id::new("lib_ctx_menu"))
         .order(egui::Order::Foreground)
         .fixed_pos(lib_ctx.pos)
         .show(ctx, |ui| {
-            hud_panel(ui, size, GOLD_DIM, |ui| {
+            hud_panel(ui, size, m, GOLD_DIM, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
 
                 if app.model.armed.is_some() {
-                    if hud_button(ui, "装入槽位", Vec2::new(ui.available_width(), 26.0), GOLD, false).clicked() {
+                    if hud_button(ui, "装入槽位", Vec2::new(ui.available_width(), 26.0), m, GOLD, false).clicked() {
                         close = true;
                         let name = lib_ctx.name.clone();
                         if lib_ctx.is_plugin {
@@ -42,21 +42,20 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context) {
 
                 let mut cat_sel = lib_ctx.category.clone();
                 egui::ComboBox::from_id_salt("lib_ctx_cat")
-                    .width(140.0)
-                    .selected_text(egui::RichText::new(super::cat_label(&cat_sel)).font(hud(12.0)).color(category_color(&cat_sel)))
+                    .width(ui.available_width())
+                    .selected_text(egui::RichText::new(super::cat_label(&cat_sel)).font(m.hud(12.0)).color(category_color(&cat_sel)))
                     .show_ui(ui, |ui| {
                         for cat in &app.lib_categories() {
-                            if ui.selectable_label(false, egui::RichText::new(super::cat_label(cat)).font(hud(12.0))).clicked() {
+                            if ui.selectable_label(false, egui::RichText::new(super::cat_label(cat)).font(m.hud(12.0))).clicked() {
                                 cat_sel = cat.clone();
+                                app.set_category_override(&lib_ctx.name, cat);
+                                app.log(LogKind::Info, format!("分类: {} → {}", lib_ctx.name, cat));
+                                close = true;
                             }
                         }
                     });
-                if cat_sel != lib_ctx.category {
-                    app.set_category_override(&lib_ctx.name, &cat_sel);
-                    app.log(LogKind::Info, format!("分类修改: {} → {}", lib_ctx.name, cat_sel));
-                }
 
-                if hud_button(ui, "设 置", Vec2::new(ui.available_width(), 26.0), CAT_EQUIP, false).clicked() {
+                if hud_button(ui, "设 置", Vec2::new(ui.available_width(), 26.0), m, CAT_EQUIP, false).clicked() {
                     close = true;
                     app.stratagem_settings.visible = true;
                     app.stratagem_settings.name = lib_ctx.name.clone();
@@ -69,7 +68,7 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context) {
                 }
 
                 if lib_ctx.is_plugin {
-                    if hud_button(ui, "删 除", Vec2::new(ui.available_width(), 26.0), DANGER, true).clicked() {
+                    if hud_button(ui, "删 除", Vec2::new(ui.available_width(), 26.0), m, DANGER, true).clicked() {
                         close = true;
                         app.delete_plugin_stratagem(&lib_ctx.name);
                     }
@@ -80,7 +79,7 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context) {
     let rect = area.response.rect;
     if ctx.input(|i| i.pointer.primary_pressed()) {
         if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
-            if !rect.contains(pos) {
+            if !rect.contains(pos) && !ctx.memory(|mem| mem.any_popup_open()) {
                 close = true;
             }
         }

@@ -6,10 +6,9 @@ use crate::theme::*;
 use crate::widgets::*;
 use crate::H2ACApp;
 use crate::LogKind;
-use crate::ui::common::{fit_font, TILE_GAP, TILE_H, TILE_W};
 use crate::ui::detail::render_detail;
 
-pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
+pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) {
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 28.0));
     let mut h = ui.new_child(
         egui::UiBuilder::new()
@@ -17,16 +16,16 @@ pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     h.horizontal(|ui| {
-        ui.label(egui::RichText::new("战备配置").font(hud_b(16.0)).color(TEXT));
-        ui.label(egui::RichText::new("LOADOUT").font(hud(11.0)).color(TEXT_DIM));
+        ui.label(egui::RichText::new("战备配置").font(m.hud_b(16.0)).color(TEXT));
+        ui.label(egui::RichText::new("LOADOUT").font(m.hud(11.0)).color(TEXT_DIM));
         let hint = if app.model.armed.is_some() {
             "待命装填中 — 点击右侧战备库装入，ESC 取消"
         } else {
             "点选槽位待命 · 双击执行 · 右键快捷操作"
         };
-        ui.label(egui::RichText::new(hint).font(hud(11.0)).color(if app.model.armed.is_some() { GOLD } else { TEXT_DIM }));
+        ui.label(egui::RichText::new(hint).font(m.hud(11.0)).color(if app.model.armed.is_some() { GOLD } else { TEXT_DIM }));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if hud_button(ui, "清空全部", Vec2::new(76.0, 24.0), DANGER, true).clicked() {
+            if hud_button(ui, "清空全部", Vec2::new(76.0, 24.0), m, DANGER, true).clicked() {
                 for i in 0..config::SLOT_COUNT {
                     app.clear_slot(i);
                 }
@@ -37,35 +36,41 @@ pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
     });
 
     let grid_top = header.bottom() + 8.0;
+    let tw = m.tile_w();
+    let th = m.tile_h();
+    let tg = m.tile_gap();
     let grid_rect = Rect::from_min_size(
         Pos2::new(rect.left(), grid_top),
-        Vec2::new(TILE_W * 5.0 + TILE_GAP * 4.0, TILE_H * 2.0 + TILE_GAP),
+        Vec2::new(tw * 5.0 + tg * 4.0, th * 2.0 + tg),
     );
-    render_grid(app, ui, grid_rect);
+    render_grid(app, ui, grid_rect, m);
 
     let detail = Rect::from_min_max(
         Pos2::new(rect.left(), grid_rect.bottom() + 8.0),
         rect.max,
     );
-    render_detail(app, ui, detail);
+    render_detail(app, ui, detail, m);
 }
 
-pub fn render_grid(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
+pub fn render_grid(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) {
+    let tw = m.tile_w();
+    let th = m.tile_h();
+    let tg = m.tile_gap();
     for idx in 0..config::SLOT_COUNT {
         let row = idx / 5;
         let col = idx % 5;
         let tile = Rect::from_min_size(
             Pos2::new(
-                rect.left() + col as f32 * (TILE_W + TILE_GAP),
-                rect.top() + row as f32 * (TILE_H + TILE_GAP),
+                rect.left() + col as f32 * (tw + tg),
+                rect.top() + row as f32 * (th + tg),
             ),
-            Vec2::new(TILE_W, TILE_H),
+            Vec2::new(tw, th),
         );
-        render_slot_tile(app, ui, tile, idx);
+        render_slot_tile(app, ui, tile, idx, m);
     }
 }
 
-pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize) {
+pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, m: &UiMetrics) {
     let resp = ui.interact(rect, ui.id().with(("slot", idx)), Sense::click());
     let p = ui.painter_at(rect);
     let filled = app.slot_filled(idx);
@@ -80,21 +85,22 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize) 
     } else {
         Stroke::new(1.0, LINE)
     };
-    paint_chamfer(&p, rect, 8.0, bg, border);
+    let c = m.chamfer();
+    paint_chamfer(&p, rect, c, bg, border);
     if armed {
         corner_brackets(&p, rect.shrink(3.0), 8.0, GOLD);
         p.add(egui::Shape::convex_polygon(
-            chamfer_points(rect.shrink(1.5), 8.0),
+            chamfer_points(rect.shrink(1.5), c),
             GOLD_GHOST,
             Stroke::NONE,
         ));
     }
 
     p.text(
-        Pos2::new(rect.left() + 8.0, rect.top() + 6.0),
+        Pos2::new(rect.left() + m.slot_tile_num_x(), rect.top() + m.slot_tile_num_y()),
         Align2::LEFT_TOP,
         format!("{:02}", idx + 1),
-        hud_b(10.0),
+        m.hud_b(10.0),
         TEXT_DIM,
     );
 
@@ -104,7 +110,7 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize) 
         if k < 1.0 {
             let a = ((1.0 - k) * 140.0) as u8;
             p.add(egui::Shape::convex_polygon(
-                chamfer_points(rect, 8.0),
+                chamfer_points(rect, c),
                 Color32::from_rgba_unmultiplied(0xF5, 0xC8, 0x42, a / 3),
                 Stroke::NONE,
             ));
@@ -121,8 +127,8 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize) 
         let accent = category_color(&eff_cat);
 
         let icon_rect = Rect::from_center_size(
-            Pos2::new(rect.center().x, rect.top() + 48.0),
-            Vec2::splat(56.0),
+            Pos2::new(rect.center().x, rect.top() + m.slot_icon_y()),
+            Vec2::splat(m.slot_icon_size()),
         );
         if let Some(tex) = app.model.icons.get(icon_key) {
             p.image(
@@ -133,28 +139,30 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize) 
             );
         }
 
-        let font = fit_font(&p, &name, rect.width() - 14.0, &[13.0, 11.5, 10.0], false);
+        let font = m.fit_font(&p, &name, rect.width() - 14.0, &[13.0, 11.5, 10.0], false);
         p.text(
-            Pos2::new(rect.center().x, rect.top() + 84.0),
+            Pos2::new(rect.center().x, rect.top() + m.slot_name_y()),
             Align2::CENTER_TOP,
             &name,
             font,
             TEXT,
         );
 
-        let aw = arrow_strip_w(&cmd, 10.0, 3.0);
+        let arrow_size = m.slot_arrow_size();
+        let arrow_gap = m.slot_arrow_gap();
+        let aw = arrow_strip_w(&cmd, arrow_size, arrow_gap);
         arrow_strip(
             &p,
-            Pos2::new(rect.center().x - aw / 2.0, rect.top() + 112.0),
+            Pos2::new(rect.center().x - aw / 2.0, rect.top() + m.slot_arrow_y()),
             &cmd,
-            10.0,
-            3.0,
+            arrow_size,
+            arrow_gap,
             GOLD_MID,
         );
 
         let strip = Rect::from_min_max(
-            Pos2::new(rect.left() + 10.0, rect.bottom() - 5.0),
-            Pos2::new(rect.right() - 10.0, rect.bottom() - 2.0),
+            Pos2::new(rect.left() + 10.0, rect.bottom() - m.slot_cat_bar_y_offset()),
+            Pos2::new(rect.right() - 10.0, rect.bottom() - m.slot_cat_bar_y_offset() + m.slot_cat_bar_h()),
         );
         p.rect_filled(strip, CornerRadius::ZERO, accent);
     } else {
@@ -162,18 +170,18 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize) 
             rect.center(),
             Align2::CENTER_CENTER,
             "EMPTY",
-            hud(12.0),
+            m.hud(12.0),
             TEXT_DIM,
         );
     }
 
     if let Some(hk) = app.model.config.slot_hotkeys.get(&idx.to_string()) {
         let badge = Rect::from_min_size(
-            Pos2::new(rect.right() - 26.0, rect.top() + 5.0),
-            Vec2::new(21.0, 15.0),
+            Pos2::new(rect.right() - m.slot_hotkey_badge_x_offset(), rect.top() + m.slot_hotkey_badge_y_offset()),
+            Vec2::new(m.slot_hotkey_badge_w(), m.slot_hotkey_badge_h()),
         );
         paint_chamfer(&p, badge, 3.0, BG_DEEP, Stroke::new(1.0, OK.gamma_multiply(0.6)));
-        let hf = fit_font(&p, &hk.to_uppercase(), 17.0, &[9.5, 8.0], true);
+        let hf = m.fit_font(&p, &hk.to_uppercase(), 17.0, &[9.5, 8.0], true);
         p.text(badge.center(), Align2::CENTER_CENTER, hk.to_uppercase(), hf, OK);
     }
 

@@ -6,7 +6,7 @@ use crate::widgets::*;
 use crate::wiki_fetcher;
 use crate::H2ACApp;
 
-pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context) {
+pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
     if !app.creator.open {
         return;
     }
@@ -54,39 +54,39 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context) {
         });
     }
 
-    let sz = Vec2::new(560.0, 480.0);
+    let sz = Vec2::new(m.plugin_creator_w(), m.plugin_creator_h());
     egui::Area::new(egui::Id::new("plugin_creator"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            hud_panel(ui, sz, GOLD_DIM, |ui| {
+            hud_panel(ui, sz, m, GOLD_DIM, |ui| {
                 ui.horizontal(|ui| {
                     let tab_fetch = ui.selectable_label(
                         app.creator.tab == CreatorTab::Fetch,
-                        egui::RichText::new("📡 拉取数据").font(hud(13.0)),
+                        egui::RichText::new("📡 拉取数据").font(m.hud(13.0)),
                     );
                     if tab_fetch.clicked() { app.creator.tab = CreatorTab::Fetch; }
                     let tab_create = ui.selectable_label(
                         app.creator.tab == CreatorTab::Create,
-                        egui::RichText::new("🛠 创建战备").font(hud(13.0)),
+                        egui::RichText::new("🛠 创建战备").font(m.hud(13.0)),
                     );
                     if tab_create.clicked() { app.creator.tab = CreatorTab::Create; }
                     let tab_themes = ui.selectable_label(
                         app.creator.tab == CreatorTab::Themes,
-                        egui::RichText::new("🎨 创建主题").font(hud(13.0)),
+                        egui::RichText::new("🎨 创建主题").font(m.hud(13.0)),
                     );
                     if tab_themes.clicked() { app.creator.tab = CreatorTab::Themes; }
                 });
                 ui.add_space(8.0);
 
                 match app.creator.tab {
-                    CreatorTab::Fetch => render_fetch_tab(app, ui),
-                    CreatorTab::Create => render_create_tab(app, ui),
-                    CreatorTab::Themes => render_themes_tab(app, ui),
+                    CreatorTab::Fetch => render_fetch_tab(app, ui, m),
+                    CreatorTab::Create => render_create_tab(app, ui, m),
+                    CreatorTab::Themes => render_themes_tab(app, ui, m),
                 }
 
                 ui.add_space(4.0);
-                if hud_button(ui, "关 闭", Vec2::new(120.0, 28.0), TEXT_SUB, false).clicked() {
+                if hud_button(ui, "关 闭", Vec2::new(120.0, 28.0), m, TEXT_SUB, false).clicked() {
                     app.creator.open = false;
                 }
             });
@@ -98,36 +98,36 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context) {
     }
 }
 
-pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui) {
-    ui.label(egui::RichText::new("从社区 Wiki 拉取最新战备数据").font(hud_b(14.0)).color(GOLD));
+pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
+    ui.label(egui::RichText::new("从社区 Wiki 拉取最新战备数据").font(m.hud_b(14.0)).color(GOLD));
     ui.add_space(6.0);
     ui.label(egui::RichText::new(format!("数据源: {}", wiki_fetcher::STRATAGEM_DATA_URL))
-        .font(hud(9.0)).color(TEXT_DIM));
+        .font(m.hud(9.0)).color(TEXT_DIM));
     ui.add_space(8.0);
 
     let fetching = app.wiki.fetch_rx.is_some();
 
     if fetching {
-        ui.label(egui::RichText::new(&app.wiki.fetch_status).font(hud(13.0)).color(TEXT_SUB));
+        ui.label(egui::RichText::new(&app.wiki.fetch_status).font(m.hud(13.0)).color(TEXT_SUB));
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("⟳ 拉取中…").font(hud(13.0)).color(GOLD));
+        ui.label(egui::RichText::new("⟳ 拉取中…").font(m.hud(13.0)).color(GOLD));
     } else {
         let status = if app.wiki.cache_exists {
             format!("已缓存数据 | 可刷新")
         } else {
             "尚未拉取过数据".into()
         };
-        ui.label(egui::RichText::new(&status).font(hud(12.0)).color(TEXT_SUB));
+        ui.label(egui::RichText::new(&status).font(m.hud(12.0)).color(TEXT_SUB));
     }
 
     ui.add_space(10.0);
 
     ui.horizontal(|ui| {
-        if hud_button(ui, "拉取数据", Vec2::new(140.0, 30.0), GOLD, false).clicked() && !fetching {
+        if hud_button(ui, "拉取数据", Vec2::new(140.0, 30.0), m, GOLD, false).clicked() && !fetching {
             app.start_wiki_fetch();
         }
         if app.wiki.cache_exists && !fetching {
-            if hud_button(ui, "清除缓存", Vec2::new(100.0, 30.0), DANGER, true).clicked() {
+            if hud_button(ui, "清除缓存", Vec2::new(100.0, 30.0), m, DANGER, true).clicked() {
                 let path = wiki_fetcher::stratagem_cache_path();
                 let _ = std::fs::remove_file(&path);
                 app.wiki.cache_exists = false;
@@ -138,46 +138,46 @@ pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui) {
 
     if !app.creator.status.is_empty() {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(&app.creator.status).font(hud(11.0)).color(OK));
+        ui.label(egui::RichText::new(&app.creator.status).font(m.hud(11.0)).color(OK));
     }
 }
 
-pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui) {
-    ui.label(egui::RichText::new("创建战备插件").font(hud_b(14.0)).color(GOLD));
+pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
+    ui.label(egui::RichText::new("创建战备插件").font(m.hud_b(14.0)).color(GOLD));
     ui.add_space(6.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("插件名:").font(hud(13.0)));
+        ui.label(egui::RichText::new("插件名:").font(m.hud(13.0)));
         ui.add(egui::TextEdit::singleline(&mut app.creator.plugin_name)
-            .font(hud(13.0)).desired_width(160.0));
+            .font(m.hud(13.0)).desired_width(160.0));
         ui.add_space(16.0);
-        ui.label(egui::RichText::new("部门:").font(hud(13.0)));
+        ui.label(egui::RichText::new("部门:").font(m.hud(13.0)));
         ui.add(egui::TextEdit::singleline(&mut app.creator.department)
-            .font(hud(13.0)).desired_width(120.0));
+            .font(m.hud(13.0)).desired_width(120.0));
     });
 
     ui.add_space(8.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("名称:").font(hud(13.0)));
+        ui.label(egui::RichText::new("名称:").font(m.hud(13.0)));
         ui.add(egui::TextEdit::singleline(&mut app.creator.stratagem_name)
-            .font(hud(13.0)).desired_width(120.0));
+            .font(m.hud(13.0)).desired_width(120.0));
         ui.add_space(8.0);
 
         if app.creator.sequence_recording {
-            if hud_button(ui, "停止录制", Vec2::new(88.0, 26.0), DANGER, true).clicked() {
+            if hud_button(ui, "停止录制", Vec2::new(88.0, 26.0), m, DANGER, true).clicked() {
                 app.creator.sequence_recording = false;
             }
         } else {
-            if hud_button(ui, "🎬 录制", Vec2::new(80.0, 26.0), GOLD, false).clicked() {
+            if hud_button(ui, "🎬 录制", Vec2::new(80.0, 26.0), m, GOLD, false).clicked() {
                 app.creator.sequence_recording = true;
                 app.creator.stratagem_sequence.clear();
             }
         }
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("图标:").font(hud(13.0)));
+        ui.label(egui::RichText::new("图标:").font(m.hud(13.0)));
         ui.add(egui::TextEdit::singleline(&mut app.creator.icon_key)
-            .font(hud(13.0)).desired_width(100.0));
+            .font(m.hud(13.0)).desired_width(100.0));
     });
 
     let seq_str = app.creator.stratagem_sequence.join(" ");
@@ -188,17 +188,17 @@ pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui) {
     } else {
         "点击录制后按方向键…".into()
     };
-    ui.label(egui::RichText::new(&status).font(hud(12.0)).color(TEXT_SUB));
+    ui.label(egui::RichText::new(&status).font(m.hud(12.0)).color(TEXT_SUB));
 
     ui.add_space(8.0);
 
-    ui.label(egui::RichText::new("已保存条目:").font(hud_b(12.0)).color(TEXT));
+    ui.label(egui::RichText::new("已保存条目:").font(m.hud_b(12.0)).color(TEXT));
     let mut remove_idx = None;
     for (i, (name, seq, icon)) in app.creator.saved_entries.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("{}. {} [{}] ({})", i+1, name, seq.join(""), icon))
-                .font(hud(11.0)).color(TEXT_SUB));
-            if hud_button(ui, "✕", Vec2::new(22.0, 20.0), DANGER, true).clicked() {
+                .font(m.hud(11.0)).color(TEXT_SUB));
+            if hud_button(ui, "✕", Vec2::new(22.0, 20.0), m, DANGER, true).clicked() {
                 remove_idx = Some(i);
             }
         });
@@ -208,23 +208,23 @@ pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui) {
     ui.add_space(10.0);
 
     ui.horizontal(|ui| {
-        if hud_button(ui, "保存插件", Vec2::new(130.0, 32.0), GOLD, false).clicked() {
+        if hud_button(ui, "保存插件", Vec2::new(130.0, 32.0), m, GOLD, false).clicked() {
             save_plugin_from_creator(app);
         }
         if !app.creator.status.is_empty() {
-            ui.label(egui::RichText::new(&app.creator.status).font(hud(11.0)));
+            ui.label(egui::RichText::new(&app.creator.status).font(m.hud(11.0)));
         }
     });
 }
 
-pub fn render_themes_tab(app: &mut H2ACApp, ui: &mut Ui) {
-    ui.label(egui::RichText::new("创建主题插件").font(hud_b(14.0)).color(GOLD));
+pub fn render_themes_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
+    ui.label(egui::RichText::new("创建主题插件").font(m.hud_b(14.0)).color(GOLD));
     ui.add_space(6.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("主题名:").font(hud(13.0)));
+        ui.label(egui::RichText::new("主题名:").font(m.hud(13.0)));
         ui.add(egui::TextEdit::singleline(&mut app.creator.theme_name)
-            .font(hud(13.0)).desired_width(160.0));
+            .font(m.hud(13.0)).desired_width(160.0));
     });
     ui.add_space(8.0);
 
@@ -235,17 +235,17 @@ pub fn render_themes_tab(app: &mut H2ACApp, ui: &mut Ui) {
     ];
     for (label, color) in &mut colors {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(*label).font(hud(13.0)));
+            ui.label(egui::RichText::new(*label).font(m.hud(13.0)));
             ui.color_edit_button_rgb(color);
         });
     }
 
     ui.add_space(10.0);
-    if hud_button(ui, "保存主题", Vec2::new(130.0, 32.0), GOLD, false).clicked() {
+    if hud_button(ui, "保存主题", Vec2::new(130.0, 32.0), m, GOLD, false).clicked() {
         save_theme_from_creator(app);
     }
     if !app.creator.status.is_empty() {
-        ui.label(egui::RichText::new(&app.creator.status).font(hud(11.0)));
+        ui.label(egui::RichText::new(&app.creator.status).font(m.hud(11.0)));
     }
 }
 

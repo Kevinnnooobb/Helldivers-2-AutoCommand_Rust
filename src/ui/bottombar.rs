@@ -5,7 +5,7 @@ use crate::widgets::*;
 use crate::H2ACApp;
 use crate::LogKind;
 
-pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
+pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) {
     let p = ui.painter().clone();
     p.rect_filled(rect, CornerRadius::ZERO, BG_PANEL);
     p.hline(rect.left()..=rect.right(), rect.top() + 0.5, Stroke::new(1.0, LINE));
@@ -28,7 +28,7 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
             Pos2::new(rect.left() + 16.0, y),
             Align2::LEFT_BOTTOM,
             format!("> {}  {}", e.time, e.text),
-            hud(11.0),
+            m.hud(11.0),
             color,
         );
         y -= 15.0;
@@ -59,7 +59,6 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
             app.refresh_profiles();
             app.log(LogKind::Info, format!("已保存 Profile: {}", app.model.save_profile_name));
         }
-        // ▶ 加载按钮
         if glyph_button(ui, Glyph::Play, 26.0, "加载所选 Profile").clicked()
             && !app.model.current_profile.is_empty()
         {
@@ -67,8 +66,8 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
         }
         ui.add(
             egui::TextEdit::singleline(&mut app.model.save_profile_name)
-                .hint_text(egui::RichText::new("新Profile名").font(hud(12.0)).color(TEXT_DIM))
-                .font(hud(12.0))
+                .hint_text(egui::RichText::new("新Profile名").font(m.hud(12.0)).color(TEXT_DIM))
+                .font(m.hud(12.0))
                 .desired_width(90.0),
         );
 
@@ -77,7 +76,7 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
             .width(120.0)
             .selected_text(
                 egui::RichText::new(if sel.is_empty() { "选择 Profile" } else { &sel })
-                    .font(hud(12.0)),
+                    .font(m.hud(12.0)),
             )
             .show_ui(ui, |ui| {
                 for n in &app.model.profile_names.clone() {
@@ -87,6 +86,6 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
         if sel != app.model.current_profile && !sel.is_empty() {
             app.model.current_profile = sel;
         }
-        ui.label(egui::RichText::new("PROFILE").font(hud(10.0)).color(TEXT_DIM));
+        ui.label(egui::RichText::new("PROFILE").font(m.hud(10.0)).color(TEXT_DIM));
     });
 }

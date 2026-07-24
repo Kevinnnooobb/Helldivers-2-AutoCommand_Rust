@@ -28,7 +28,6 @@ use state::{
     AppModel, CaptureState, CreatorState, LibraryState, PluginData, WikiState,
 };
 use stratagems::{get_categories, STRATAGEMS};
-use theme::{MAIN_H, MAIN_W};
 
 // ─── 日志 ───
 
@@ -135,9 +134,12 @@ impl H2ACApp {
             compact: false,
             flash: HashMap::new(),
             icons,
+            debug_mode: false,
             profile_names,
             current_profile: String::new(),
             save_profile_name: String::new(),
+            scale: 1.0,
+            metrics: theme::UiMetrics::new(1.0),
         };
 
         let library = LibraryState {
@@ -179,6 +181,24 @@ impl H2ACApp {
         }
     }
 
+    /// 调试日志（写入 panic.log 同目录的 debug.log，同时入应用日志）
+    pub fn debug(&mut self, text: impl Into<String>) {
+        let msg = text.into();
+        let line = format!("{} DBG {}", now_hms(), msg);
+        eprintln!("{line}");
+        let dir = std::env::current_exe()
+            .ok().and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let _ = std::fs::write(dir.join("debug.log"), format!("{line}\n"));
+        // append to existing log
+        let path = dir.join("debug.log");
+        if path.exists() {
+            let _ = std::fs::OpenOptions::new().append(true).open(&path)
+                .map(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
+        }
+        self.log(LogKind::Info, format!("[DBG] {msg}"));
+    }
+
     pub fn open_settings(&mut self) {
         self.settings_bindings = self.model.config.key_bindings.clone();
         self.settings_key = self.model.config.stratagem_key.clone();
@@ -192,12 +212,12 @@ impl H2ACApp {
         self.context = None;
         if compact {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
-                compact_view::compact_width(), theme::COMPACT_H,
+                theme::COMPACT_DESIGN_W, theme::COMPACT_DESIGN_H,
             )));
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(MAIN_W, MAIN_H)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(theme::DESIGN_W, theme::DESIGN_H)));
         }
     }
 
@@ -241,6 +261,21 @@ impl H2ACApp {
 
 impl eframe::App for H2ACApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // 计算当前窗口对应的缩放比例
+        let sr = ctx.screen_rect();
+        let (dw, dh) = if self.model.compact {
+            (theme::COMPACT_DESIGN_W, theme::COMPACT_DESIGN_H)
+        } else {
+            (theme::DESIGN_W, theme::DESIGN_H)
+        };
+        let scale = (sr.width() / dw).min(sr.height() / dh).max(0.25);
+
+        if (scale - self.model.scale).abs() > 0.001 {
+            self.model.scale = scale;
+            self.model.metrics = theme::UiMetrics::new(scale);
+            ctx.set_style(theme::apply_scaled(&self.model.metrics));
+        }
+
         if let Some(ref rx) = self.hotkey_rx {
             if let Ok(s) = rx.try_recv() { self.execute_slot(s); }
         }
@@ -343,8 +378,8 @@ fn main() -> Result<(), eframe::Error> {
         "H2AC-RS",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([MAIN_W, MAIN_H])
-                .with_resizable(false)
+                .with_inner_size([theme::DESIGN_W, theme::DESIGN_H])
+                .with_resizable(true)
                 .with_decorations(false)
                 .with_title("H2AC-RS 绝地潜兵2 战备终端")
                 .with_icon(icon.map(std::sync::Arc::new).unwrap_or_default()),
