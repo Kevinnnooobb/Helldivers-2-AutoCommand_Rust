@@ -8,60 +8,78 @@ use crate::widgets::*;
 
 use crate::H2ACApp;
 
-const TILE: f32 = 40.0;
-const GAP: f32 = 6.0;
-const CTRL: f32 = 30.0; // 右侧控制区单元宽
-
-/// 紧凑条窗口宽度
-pub fn compact_width() -> f32 {
-    12.0 * 2.0 + TILE * 10.0 + GAP * 9.0 + 10.0 + CTRL * 2.0 + 6.0
-}
-
 impl H2ACApp {
     pub fn show_compact(&mut self, ctx: &Context) {
+        let m = self.model.metrics;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG_DEEP).inner_margin(0.0))
             .show(ctx, |ui| {
                 let full = ui.available_rect_before_wrap();
                 ui.advance_cursor_after_rect(full);
 
-                // 整体可拖拽（控件命中优先）
-                let drag = ui.interact(full, ui.id().with("cdrag"), Sense::drag());
+                let lw = m.compact_w();
+                let lh = m.compact_h();
+                let ox = ((full.width() - lw) / 2.0).max(0.0);
+                let oy = ((full.height() - lh) / 2.0).max(0.0);
+                let cr = Rect::from_min_size(Pos2::new(full.left() + ox, full.top() + oy), Vec2::new(lw, lh));
+
+                let drag = ui.interact(cr, ui.id().with("cdrag"), Sense::drag());
                 if drag.drag_started_by(egui::PointerButton::Primary) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
 
                 let p = ui.painter();
-                paint_chamfer(p, full, 8.0, BG_PANEL, Stroke::new(1.0, LINE));
-                corner_brackets(p, full.shrink(2.0), 6.0, GOLD_DIM);
+                paint_chamfer(p, cr, m.chamfer(), BG_PANEL, Stroke::new(1.0, LINE));
+                corner_brackets(p, cr.shrink(2.0), 6.0, GOLD_DIM);
 
+                let inner_margin = m.compact_inner_margin();
                 let mut bar = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(full.shrink2(Vec2::new(12.0, 0.0)))
+                        .max_rect(cr.shrink2(Vec2::new(inner_margin, 0.0)))
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
 
+                let gap = m.compact_gap();
                 bar.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for idx in 0..config::SLOT_COUNT {
-                        self.render_compact_tile(ui, idx);
+                        self.render_compact_tile(ui, idx, &m);
                         if idx < 9 {
-                            ui.add_space(GAP);
+                            ui.add_space(gap);
                         }
                     }
                     ui.add_space(10.0);
-                    self.render_compact_controls(ui, ctx);
+                    self.render_compact_controls(ui, ctx, &m);
                 });
             });
 
-        // 监听脉冲动画
         if self.model.listening {
             ctx.request_repaint_after(std::time::Duration::from_millis(66));
         }
+
+         let _grip = egui::Area::new(egui::Id::new("compact_resize_grip"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let (resp, _) = ui.allocate_painter(Vec2::new(16.0, 16.0), Sense::drag());
+                if resp.hovered() { ctx.set_cursor_icon(CursorIcon::ResizeNwSe); }
+                let delta = resp.drag_delta();
+                if delta != Vec2::ZERO {
+                    let new = ctx.screen_rect().size() + delta;
+                    let min_w = 277.0;
+                    let min_h = 28.0;
+                    if new.x >= min_w && new.y >= min_h {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                            egui::Vec2::new(new.x.round(), new.y.round()),
+                        ));
+                    }
+                }
+            });
     }
 
-    fn render_compact_tile(&mut self, ui: &mut Ui, idx: usize) {
-        let (resp, p) = ui.allocate_painter(Vec2::splat(TILE), Sense::click());
+    fn render_compact_tile(&mut self, ui: &mut Ui, idx: usize, m: &UiMetrics) {
+        let tile = m.compact_tile();
+        let (resp, p) = ui.allocate_painter(Vec2::splat(tile), Sense::click());
         let rect = resp.rect;
         let filled = self.slot_filled(idx);
 
@@ -82,7 +100,7 @@ impl H2ACApp {
                     Color32::WHITE,
                 );
             } else {
-                p.text(rect.center(), Align2::CENTER_CENTER, "?", hud(12.0), TEXT_DIM);
+                p.text(rect.center(), Align2::CENTER_CENTER, "?", m.hud(12.0), TEXT_DIM);
             }
             p.circle_filled(
                 Pos2::new(rect.right() - 5.0, rect.bottom() - 5.0),
@@ -94,23 +112,21 @@ impl H2ACApp {
                 rect.center(),
                 Align2::CENTER_CENTER,
                 format!("{}", idx + 1),
-                hud(11.0),
+                m.hud(11.0),
                 TEXT_DIM,
             );
         }
 
-        // 热键角标
         if let Some(hk) = self.model.config.slot_hotkeys.get(&idx.to_string()) {
             p.text(
                 Pos2::new(rect.left() + 3.0, rect.top() + 1.0),
                 Align2::LEFT_TOP,
                 hk.to_uppercase(),
-                hud_b(8.0),
+                m.hud_b(8.0),
                 OK,
             );
         }
 
-        // 执行闪光
         let now = ui.ctx().input(|i| i.time);
         if let Some(&t0) = self.model.flash.get(&idx) {
             let k = (now - t0) as f32 / 0.7;
@@ -138,9 +154,9 @@ impl H2ACApp {
         }
     }
 
-    fn render_compact_controls(&mut self, ui: &mut Ui, ctx: &Context) {
-        // 监听状态灯
-        let (resp, p) = ui.allocate_painter(Vec2::splat(CTRL), Sense::click());
+    fn render_compact_controls(&mut self, ui: &mut Ui, ctx: &Context, m: &UiMetrics) {
+        let ctrl = m.compact_ctrl();
+        let (resp, p) = ui.allocate_painter(Vec2::splat(ctrl), Sense::click());
         let t = ui.ctx().input(|i| i.time);
         if resp.hovered() {
             paint_chamfer(&p, resp.rect.shrink(1.0), 4.0, BG_HOVER, Stroke::NONE);
@@ -151,8 +167,7 @@ impl H2ACApp {
             self.toggle_listening();
         }
 
-        // 还原主界面
-        if glyph_button(ui, Glyph::Restore, CTRL, "返回主界面").clicked() {
+        if glyph_button(ui, Glyph::Restore, ctrl, "返回主界面").clicked() {
             self.set_compact(ctx, false);
         }
     }

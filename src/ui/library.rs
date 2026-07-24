@@ -4,14 +4,14 @@ use crate::theme::*;
 use crate::widgets::*;
 use crate::H2ACApp;
 use crate::LibraryContext;
-use crate::ui::common::{cat_short, fit_font};
+use crate::ui::common::cat_short;
 
-pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
+pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) {
     let mut region = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    hud_panel(&mut region, rect.size(), LINE, |ui| {
+    hud_panel(&mut region, rect.size(), m, LINE, |ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("战备库").font(hud_b(16.0)).color(TEXT));
-            ui.label(egui::RichText::new("LIBRARY").font(hud(10.0)).color(TEXT_DIM));
+            ui.label(egui::RichText::new("战备库").font(m.hud_b(16.0)).color(TEXT));
+            ui.label(egui::RichText::new("LIBRARY").font(m.hud(10.0)).color(TEXT_DIM));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if glyph_button(ui, Glyph::Save, 24.0, "创建/管理插件").clicked() {
                     app.creator.open = !app.creator.open;
@@ -27,8 +27,8 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
                 }
                 ui.add_space(4.0);
                 let search = egui::TextEdit::singleline(&mut app.library.lib_search)
-                    .hint_text(egui::RichText::new("搜索…").font(hud(12.0)).color(TEXT_DIM))
-                    .font(hud(13.0))
+                    .hint_text(egui::RichText::new("搜索…").font(m.hud(12.0)).color(TEXT_DIM))
+                    .font(m.hud(13.0))
                     .desired_width(120.0)
                     .frame(true);
                 let sresp = ui.add(search);
@@ -41,7 +41,7 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
         ui.add_space(8.0);
 
         let body = ui.available_rect_before_wrap();
-        let rail = Rect::from_min_size(body.min, Vec2::new(64.0, body.height()));
+        let rail = Rect::from_min_size(body.min, Vec2::new(m.cat_rail_w(), body.height()));
         let list = Rect::from_min_max(
             Pos2::new(rail.right() + 8.0, body.top()),
             body.max,
@@ -50,18 +50,20 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
         let cats = app.lib_categories();
         for (i, cat) in cats.iter().enumerate() {
             let row = Rect::from_min_size(
-                Pos2::new(rail.left(), rail.top() + i as f32 * 38.0),
-                Vec2::new(60.0, 34.0),
+                Pos2::new(rail.left(), rail.top() + i as f32 * m.cat_row_spacing()),
+                Vec2::new(m.cat_row_w(), m.cat_row_h()),
             );
             let resp = ui.interact(row, ui.id().with(("cat", i)), Sense::click());
             let p = ui.painter_at(row);
             let sel = app.library.lib_search.is_empty() && app.library.lib_category == *cat;
             let accent = category_color(cat);
+
             if resp.hovered() || sel {
                 paint_chamfer(&p, row, 5.0, if sel { BG_HOVER } else { BG_RAISED }, Stroke::NONE);
             }
+
             p.rect_filled(
-                Rect::from_min_size(row.min, Vec2::new(3.0, 34.0)),
+                Rect::from_min_size(row.min, Vec2::new(m.cat_accent_bar_w(), m.cat_row_h())),
                 CornerRadius::ZERO,
                 if sel { accent } else { accent.gamma_multiply(0.35) },
             );
@@ -69,7 +71,7 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
                 Pos2::new(row.left() + 9.0, row.center().y),
                 Align2::LEFT_CENTER,
                 cat_short(cat),
-                hud(13.0),
+                m.hud(13.0),
                 if sel { TEXT } else { TEXT_SUB },
             );
             if resp.hovered() {
@@ -91,12 +93,12 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
             .auto_shrink([false, false])
             .show(&mut list_ui, |ui| {
                 for s in &items {
-                    render_library_row(app, ui, &s.as_ref(), list.width());
+                    render_library_row(app, ui, &s.as_ref(), m);
                 }
                 if app.library.lib_search.is_empty() {
                     ui.label(
                         egui::RichText::new("— 列表结束 —")
-                            .font(hud(10.0))
+                            .font(m.hud(10.0))
                             .color(TEXT_DIM),
                     );
                 }
@@ -104,11 +106,12 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect) {
     });
 }
 
-fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, width: f32) {
-    let (resp, p) = ui.allocate_painter(Vec2::new(width, 36.0), Sense::click());
+fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMetrics) {
+    let width = ui.available_rect_before_wrap().width();
+    let (resp, p) = ui.allocate_painter(Vec2::new(width, m.lib_row_h()), Sense::click());
     let rect = resp.rect;
-        let acc = app.effective_category(s.name(), s.category());
-        let _accent = category_color(&acc);
+    let acc = app.effective_category(s.name(), s.category());
+    let _accent = category_color(&acc);
 
     let in_armed = app
         .model.armed
@@ -122,8 +125,8 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, width: f
     }
 
     let icon_rect = Rect::from_center_size(
-        Pos2::new(rect.left() + 20.0, rect.center().y),
-        Vec2::splat(26.0),
+        Pos2::new(rect.left() + m.lib_row_icon_x(), rect.center().y),
+        Vec2::splat(m.lib_icon_size()),
     );
     if let Some(tex) = app.model.icons.get(s.icon()) {
         p.image(
@@ -139,8 +142,8 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, width: f
     } else {
         format!("{} · {}", s.name(), cat_short(s.category()))
     };
-    let font = fit_font(&p, &label, width - 160.0, &[13.0, 11.0], false);
     let max_w = width - 160.0;
+    let font = m.fit_font(&p, &label, max_w, &[13.0, 11.0], false);
     let display: std::borrow::Cow<'_, str> = {
         let mut s = String::new();
         let mut fits = true;
@@ -162,7 +165,7 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, width: f
         }
     };
     p.text(
-        Pos2::new(rect.left() + 40.0, rect.center().y),
+        Pos2::new(rect.left() + m.lib_row_text_x(), rect.center().y),
         Align2::LEFT_CENTER,
         &display,
         font,
@@ -171,13 +174,15 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, width: f
 
     let cmd = s.command();
     let cmd_refs: Vec<&str> = cmd.iter().map(|c| *c).collect();
-    let aw = arrow_strip_w(&cmd_refs, 8.0, 2.0);
+    let arrow_size = m.lib_arrow_size();
+    let arrow_gap = m.lib_arrow_gap();
+    let aw = arrow_strip_w(&cmd_refs, arrow_size, arrow_gap);
     arrow_strip(
         &p,
         Pos2::new(rect.right() - 10.0 - aw, rect.center().y - 4.0),
         &cmd_refs,
-        8.0,
-        2.0,
+        arrow_size,
+        arrow_gap,
         TEXT_DIM,
     );
 

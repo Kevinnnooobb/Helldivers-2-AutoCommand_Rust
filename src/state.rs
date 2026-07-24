@@ -1,12 +1,12 @@
 // 应用状态 — 按关注点分组，替代 H2ACApp God Object
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::mpsc;
-use std::sync::Arc;
 
 use crate::config::Config;
 use crate::icons::IconStore;
 use crate::stratagems::PluginStratagem;
 use crate::stratagems::PluginTheme;
+use crate::theme::UiMetrics;
 use crate::wiki_fetcher;
 
 /// 控制槽位网格、待命、执行的业务模型
@@ -21,9 +21,15 @@ pub struct AppModel {
     pub compact: bool,
     pub flash: HashMap<usize, f64>,
     pub icons: IconStore,
+    /// 调试日志开关
+    pub debug_mode: bool,
     pub profile_names: Vec<String>,
     pub current_profile: String,
     pub save_profile_name: String,
+    /// 缩放系数 = min(window_w / DESIGN_W, window_h / DESIGN_H)
+    pub scale: f32,
+    /// 缩放后的 UI 尺寸缓存
+    pub metrics: UiMetrics,
 }
 
 /// 战备库面板状态

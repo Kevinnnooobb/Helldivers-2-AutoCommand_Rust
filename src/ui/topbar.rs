@@ -5,7 +5,7 @@ use crate::theme::*;
 use crate::widgets::*;
 use crate::H2ACApp;
 
-pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context) {
+pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context, m: &UiMetrics) {
     let drag = ui.interact(rect, ui.id().with("drag"), Sense::drag());
     if drag.drag_started_by(egui::PointerButton::Primary) {
         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -24,14 +24,14 @@ pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context) 
         Pos2::new(rect.left() + 22.0, rect.top() + 13.0),
         Align2::LEFT_CENTER,
         "H2AC-RS",
-        hud_b(20.0),
+        m.hud_b(20.0),
         GOLD,
     );
     p.text(
         Pos2::new(rect.left() + 22.0, rect.top() + 34.0),
         Align2::LEFT_CENTER,
         "SUPER DESTROYER TERMINAL",
-        hud(9.0),
+        m.hud(9.0),
         TEXT_DIM,
     );
 
@@ -54,6 +54,12 @@ pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context) 
             if glyph_button(ui, Glyph::Gear, 30.0, "按键设置").clicked() {
                 app.open_settings();
             }
+            if glyph_button(ui, if app.model.debug_mode { Glyph::Keyboard } else { Glyph::Search }, 30.0,
+                if app.model.debug_mode { "调试:开" } else { "调试:关" },
+            ).clicked() {
+                app.model.debug_mode = !app.model.debug_mode;
+                app.debug(if app.model.debug_mode { "DBG ON" } else { "DBG OFF" });
+            }
 
             ui.add_space(10.0);
 
@@ -68,7 +74,7 @@ pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context) 
                 Pos2::new(resp.rect.left() + 28.0, resp.rect.center().y),
                 Align2::LEFT_CENTER,
                 if app.model.listening { "监听中" } else { "已静音" },
-                hud(13.0),
+                m.hud(13.0),
                 if app.model.listening { OK } else { DANGER },
             );
             if resp.clicked() {

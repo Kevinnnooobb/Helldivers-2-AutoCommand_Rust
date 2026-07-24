@@ -106,4 +106,5 @@ impl H2ACApp {
         if let Some(p) = self.model.plugin_slots.get(&idx) { Some(p.category.clone()) }
         else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.category.to_string()) }) }
     }
+
 }

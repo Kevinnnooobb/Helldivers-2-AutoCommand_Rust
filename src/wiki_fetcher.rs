@@ -1,7 +1,5 @@
 // Wiki 战备数据自动拉取 — 从 Stratagem Hero Trainer JS 数据源解析
 use crate::stratagems::PluginStratagem;
-use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -244,16 +242,6 @@ fn name_to_snake(name: &str) -> String {
         .to_lowercase();
     let parts: Vec<&str> = s.split('_').filter(|p| !p.is_empty()).collect();
     parts.join("_")
-}
-
-/// 从缓存加载战备数据
-pub fn load_cached_stratagems() -> Option<Vec<PluginStratagem>> {
-    let path = stratagem_cache_path();
-    if !path.exists() {
-        return None;
-    }
-    let data = fs::read_to_string(&path).ok()?;
-    serde_json::from_str::<Vec<PluginStratagem>>(&data).ok()
 }
 
 // ─── 异步刷新接口 ───
