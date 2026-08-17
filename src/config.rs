@@ -4,14 +4,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use crate::stratagems::PluginStratagem;
+use crate::util;
 
 pub const SLOT_COUNT: usize = 10;
 
 fn app_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
+    util::app_dir()
 }
 
 fn default_config_path() -> PathBuf {
@@ -97,11 +95,8 @@ impl Config {
 }
 
 pub fn save_config(config: &Config) {
-    let path = default_config_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write(&path, serde_json::to_string_pretty(config).unwrap_or_default());
+    // 序列化失败时不写文件，避免损坏现有配置
+    let _ = util::save_json(&default_config_path(), config);
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -135,15 +130,13 @@ pub fn list_profiles() -> Vec<String> {
 }
 
 pub fn save_profile(name: &str, loadout: &[Option<usize>], hotkeys: &HashMap<String, String>, plugin_slots: &HashMap<String, PluginStratagem>) {
-    let dir = profiles_dir();
-    let _ = fs::create_dir_all(&dir);
     let profile = Profile {
         loadout: loadout.to_vec(),
         slot_hotkeys: hotkeys.clone(),
         plugin_slots: plugin_slots.iter().map(|(k,v)| (k.clone(), v.clone())).collect(),
     };
-    let path = dir.join(format!("{name}.json"));
-    let _ = fs::write(&path, serde_json::to_string_pretty(&profile).unwrap_or_default());
+    let path = profiles_dir().join(format!("{name}.json"));
+    let _ = util::save_json(&path, &profile);
 }
 
 pub fn load_profile(name: &str) -> Option<Profile> {

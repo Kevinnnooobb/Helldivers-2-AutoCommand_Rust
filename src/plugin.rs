@@ -1,14 +1,21 @@
 // 插件管理器 — 从 plugins/ 目录加载 JSON 插件并合并到运行时
 use crate::stratagems::{PluginManifest, PluginStratagem};
+use crate::util;
 use std::fs;
 use std::path::PathBuf;
 
+/// Wiki 拉取结果的持久化文件名（位于 plugins/ 目录，按插件清单格式保存）
+pub const WIKI_PLUGIN_FILE: &str = "_wiki_new.json";
+/// Wiki 拉取结果插件清单的 id
+pub const WIKI_PLUGIN_ID: &str = "_wiki_new";
+
 pub fn plugins_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("plugins")
+    util::app_dir().join("plugins")
+}
+
+/// Wiki 拉取结果文件路径
+pub fn wiki_plugin_path() -> PathBuf {
+    plugins_dir().join(WIKI_PLUGIN_FILE)
 }
 
 /// 扫描 plugins/ 目录，加载所有启用的插件

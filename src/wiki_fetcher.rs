@@ -1,16 +1,13 @@
 // Wiki 战备数据自动拉取 — 从 Stratagem Hero Trainer JS 数据源解析
 use crate::stratagems::PluginStratagem;
+use crate::util;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 pub fn cache_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("wiki_cache")
+    util::app_dir().join("wiki_cache")
 }
 
 pub fn stratagem_cache_path() -> PathBuf {
@@ -256,7 +253,7 @@ pub fn start_fetch() -> (mpsc::Receiver<FetchProgress>, bool) {
     let (tx, rx) = mpsc::channel();
     let tx_progress = tx.clone();
     let tx_done = tx;
-    let has_cache = crate::plugin::plugins_dir().join("_wiki_new.json").exists();
+    let has_cache = crate::plugin::wiki_plugin_path().exists();
 
     fetch_stratagems(
         move |msg| {

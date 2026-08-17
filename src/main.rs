@@ -14,6 +14,7 @@ mod state;
 mod stratagems;
 mod theme;
 mod ui;
+mod util;
 mod widgets;
 mod wiki_fetcher;
 
@@ -181,21 +182,12 @@ impl H2ACApp {
         }
     }
 
-    /// 调试日志（写入 panic.log 同目录的 debug.log，同时入应用日志）
+    /// 调试日志（追加写入 exe 同目录 debug.log，同时入应用日志）
     pub fn debug(&mut self, text: impl Into<String>) {
         let msg = text.into();
         let line = format!("{} DBG {}", now_hms(), msg);
         eprintln!("{line}");
-        let dir = std::env::current_exe()
-            .ok().and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_default();
-        let _ = std::fs::write(dir.join("debug.log"), format!("{line}\n"));
-        // append to existing log
-        let path = dir.join("debug.log");
-        if path.exists() {
-            let _ = std::fs::OpenOptions::new().append(true).open(&path)
-                .map(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
-        }
+        util::log_to_file("debug.log", &line);
         self.log(LogKind::Info, format!("[DBG] {msg}"));
     }
 
@@ -311,19 +303,15 @@ impl eframe::App for H2ACApp {
                         // 写入 _wiki_new.json
                         if new_count > 0 {
                             let manifest = crate::stratagems::PluginManifest {
-                                id: "_wiki_new".into(),
+                                id: plugin::WIKI_PLUGIN_ID.into(),
                                 name: "Wiki 新增战备".into(),
                                 enabled: true,
                                 stratagems: truly_new,
                             };
-                            if let Ok(json) = serde_json::to_string_pretty(&manifest) {
-                                let dir = plugin::plugins_dir();
-                                let _ = std::fs::create_dir_all(&dir);
-                                let _ = std::fs::write(dir.join("_wiki_new.json"), json);
-                            }
+                            let _ = util::save_json(&plugin::wiki_plugin_path(), &manifest);
                         }
                         self.wiki.cache_exists = true;
-                        self.log(LogKind::Info, format!("Wiki 拉取完成，新增 {} 条 → plugins/_wiki_new.json", new_count));
+                        self.log(LogKind::Info, format!("Wiki 拉取完成，新增 {} 条 → plugins/{}", new_count, plugin::WIKI_PLUGIN_FILE));
                     } else {
                         self.log(LogKind::Warn, "Wiki 数据拉取失败，请检查网络");
                     }
@@ -344,16 +332,12 @@ fn main() -> Result<(), eframe::Error> {
     std::panic::set_hook(Box::new(|info| {
         let bt = std::backtrace::Backtrace::force_capture();
         let msg = format!("PANIC: {info}\n{bt}\n");
-        let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let _ = std::fs::write(dir.join("panic.log"), msg);
+        let _ = std::fs::write(util::app_dir().join("panic.log"), msg);
     }));
 
     let is_admin = unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() };
     if !is_admin {
-        let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let _ = std::fs::write(dir.join("admin_warning.txt"),
+        let _ = std::fs::write(util::app_dir().join("admin_warning.txt"),
             "未以管理员身份运行。如果游戏内按键无反应，请右键 h2ac-rs.exe → 以管理员身份运行。");
     }
 
