@@ -1,18 +1,8 @@
 // Wiki 战备数据自动拉取 — 从 Stratagem Hero Trainer JS 数据源解析
 use crate::stratagems::PluginStratagem;
-use crate::util;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
-
-pub fn cache_dir() -> PathBuf {
-    util::app_dir().join("wiki_cache")
-}
-
-pub fn stratagem_cache_path() -> PathBuf {
-    cache_dir().join("stratagems.json")
-}
 
 /// 权威数据源：Stratagem Hero Trainer 的 JS 数据文件
 pub const STRATAGEM_DATA_URL: &str =

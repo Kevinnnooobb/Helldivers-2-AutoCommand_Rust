@@ -26,10 +26,7 @@ pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetr
         ui.label(egui::RichText::new(hint).font(m.hud(11.0)).color(if app.model.armed.is_some() { GOLD } else { TEXT_DIM }));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if hud_button(ui, "清空全部", Vec2::new(76.0, 24.0), m, DANGER, true).clicked() {
-                for i in 0..config::SLOT_COUNT {
-                    app.clear_slot(i);
-                }
-                app.model.armed = None;
+                app.clear_all_slots();
                 app.log(LogKind::Warn, "全部槽位已清空");
             }
         });

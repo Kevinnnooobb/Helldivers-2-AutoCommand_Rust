@@ -3,10 +3,11 @@ use crate::H2ACApp;
 use crate::plugin;
 
 impl H2ACApp {
-    pub fn effective_category(&self, name: &str, default_cat: &str) -> String {
+    /// 战备的有效分类（优先取用户覆盖，否则用默认分类）；返回借用，避免每帧克隆
+    pub fn effective_category<'a>(&'a self, name: &str, default_cat: &'a str) -> &'a str {
         self.model.config.category_overrides.get(name)
-            .cloned()
-            .unwrap_or_else(|| default_cat.to_string())
+            .map(String::as_str)
+            .unwrap_or(default_cat)
     }
 
     pub fn set_category_override(&mut self, name: &str, category: &str) {

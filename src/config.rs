@@ -87,9 +87,22 @@ pub fn load_config() -> Config {
         .sanitize()
 }
 
+/// 槽位列表归一化：补足/截断到 SLOT_COUNT，并把越界索引（非插件哨兵）置为空槽
+fn sanitize_loadout(loadout: &mut Vec<Option<usize>>) {
+    loadout.resize(SLOT_COUNT, None);
+    let max_idx = crate::stratagems::STRATAGEMS.len();
+    for slot in loadout.iter_mut() {
+        if let Some(v) = slot {
+            if *v >= max_idx && *v != usize::MAX {
+                *slot = None;
+            }
+        }
+    }
+}
+
 impl Config {
     fn sanitize(mut self) -> Self {
-        self.loadout.resize(SLOT_COUNT, None);
+        sanitize_loadout(&mut self.loadout);
         self
     }
 }
@@ -146,7 +159,7 @@ pub fn load_profile(name: &str) -> Option<Profile> {
     }
     let data = fs::read_to_string(&path).ok()?;
     let mut p: Profile = serde_json::from_str(&data).ok()?;
-    p.loadout.resize(SLOT_COUNT, None);
+    sanitize_loadout(&mut p.loadout);
     Some(p)
 }
 

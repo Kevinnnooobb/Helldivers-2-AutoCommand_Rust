@@ -110,8 +110,6 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMe
     let width = ui.available_rect_before_wrap().width();
     let (resp, p) = ui.allocate_painter(Vec2::new(width, m.lib_row_h()), Sense::click());
     let rect = resp.rect;
-    let acc = app.effective_category(s.name(), s.category());
-    let _accent = category_color(&acc);
 
     let in_armed = app
         .model.armed
@@ -173,14 +171,13 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMe
     );
 
     let cmd = s.command();
-    let cmd_refs: Vec<&str> = cmd.iter().map(|c| *c).collect();
     let arrow_size = m.lib_arrow_size();
     let arrow_gap = m.lib_arrow_gap();
-    let aw = arrow_strip_w(&cmd_refs, arrow_size, arrow_gap);
+    let aw = arrow_strip_w(&cmd, arrow_size, arrow_gap);
     arrow_strip(
         &p,
         Pos2::new(rect.right() - 10.0 - aw, rect.center().y - 4.0),
-        &cmd_refs,
+        &cmd,
         arrow_size,
         arrow_gap,
         TEXT_DIM,

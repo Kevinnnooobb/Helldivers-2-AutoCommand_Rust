@@ -78,6 +78,7 @@ impl H2ACApp {
     }
 
     pub fn set_slot(&mut self, slot: usize, idx: usize) {
+        if slot >= SLOT_COUNT { return; }
         self.model.slots[slot] = Some(idx);
         self.model.config.loadout[slot] = Some(idx);
         save_config(&self.model.config);
@@ -89,32 +90,59 @@ impl H2ACApp {
         self.model.plugin_slots.remove(&slot);
         self.model.config.loadout[slot] = None;
         self.model.config.slot_hotkeys.remove(&slot.to_string());
+        // 状态一致性：被清除的槽位不能仍是武装/详情槽位
+        if self.model.armed == Some(slot) { self.model.armed = None; }
+        if self.model.detail_slot == Some(slot) { self.model.detail_slot = None; }
+        save_config(&self.model.config);
+        self.sync_hotkey_map();
+    }
+
+    /// 清空全部槽位（单次写盘，替代逐槽 clear_slot 的 10 次保存）
+    pub fn clear_all_slots(&mut self) {
+        for slot in 0..SLOT_COUNT {
+            self.model.slots[slot] = None;
+            self.model.plugin_slots.remove(&slot);
+            self.model.config.loadout[slot] = None;
+            self.model.config.slot_hotkeys.remove(&slot.to_string());
+        }
+        self.model.armed = None;
+        self.model.detail_slot = None;
         save_config(&self.model.config);
         self.sync_hotkey_map();
     }
 
     pub fn slot_filled(&self, idx: usize) -> bool {
-        self.model.slots[idx].is_some() || self.model.plugin_slots.contains_key(&idx)
+        self.model.slots.get(idx).map_or(false, |s| s.is_some())
+            || self.model.plugin_slots.contains_key(&idx)
     }
 
-    pub fn slot_name(&self, idx: usize) -> Option<String> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { Some(p.name.clone()) }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.name.to_string()) }) }
+    pub fn slot_name(&self, idx: usize) -> Option<&str> {
+        if let Some(p) = self.model.plugin_slots.get(&idx) { return Some(&p.name); }
+        self.base_slot(idx).map(|s| s.name)
     }
 
     pub fn slot_icon(&self, idx: usize) -> Option<&str> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { Some(&p.icon) }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.icon) }) }
+        if let Some(p) = self.model.plugin_slots.get(&idx) { return Some(&p.icon); }
+        self.base_slot(idx).map(|s| s.icon)
     }
 
     pub fn slot_command(&self, idx: usize) -> Vec<&str> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { p.command.iter().map(|c| dir_to_arrow(c.as_str())).collect() }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.command.to_vec()) }).unwrap_or_default() }
+        if let Some(p) = self.model.plugin_slots.get(&idx) {
+            return p.command.iter().map(|c| dir_to_arrow(c.as_str())).collect();
+        }
+        self.base_slot(idx).map(|s| s.command.to_vec()).unwrap_or_default()
     }
 
-    pub fn slot_category(&self, idx: usize) -> Option<String> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { Some(p.category.clone()) }
-        else { self.model.slots[idx].and_then(|si| if si == usize::MAX { None } else { STRATAGEMS.get(si).map(|s| s.category.to_string()) }) }
+    pub fn slot_category(&self, idx: usize) -> Option<&str> {
+        if let Some(p) = self.model.plugin_slots.get(&idx) { return Some(&p.category); }
+        self.base_slot(idx).map(|s| s.category)
+    }
+
+    /// 槽位内的内置战备（插件槽位或越界索引返回 None）
+    fn base_slot(&self, idx: usize) -> Option<&'static crate::stratagems::Stratagem> {
+        let si = self.model.slots.get(idx).copied().flatten()?;
+        if si == usize::MAX { return None; }
+        STRATAGEMS.get(si)
     }
 
 }

@@ -21,18 +21,23 @@ pub fn render_detail(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) 
             cmd = p.command.iter().map(|c| dir_to_arrow(c.as_str())).collect();
             def_cat = p.category.clone();
             model_name = p.model.clone();
-        } else if let Some(si) = app.model.slots[idx] {
-            let s = &STRATAGEMS[si];
-            name = s.name.to_string();
-            icon_key = s.icon.to_string();
-            cmd = s.command.to_vec();
-            def_cat = s.category.to_string();
-            model_name = s.model.to_string();
+        } else if let Some(Some(si)) = app.model.slots.get(idx) {
+            // 越界/非法索引不再 panic：视为空槽
+            if let Some(s) = STRATAGEMS.get(*si) {
+                name = s.name.to_string();
+                icon_key = s.icon.to_string();
+                cmd = s.command.to_vec();
+                def_cat = s.category.to_string();
+                model_name = s.model.to_string();
+            } else {
+                return;
+            }
         } else {
             return;
         };
         let eff_cat = app.effective_category(&name, &def_cat);
-        let accent = category_color(&eff_cat);
+        let orig_cat = eff_cat.to_string();
+        let accent = category_color(eff_cat);
 
         let content = ui.available_rect_before_wrap();
         let h = content.height();
@@ -54,7 +59,7 @@ pub fn render_detail(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) 
 
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("{} ·", model_name)).font(m.hud(12.0)).color(TEXT_SUB));
-                let mut cat_sel = eff_cat.clone();
+                let mut cat_sel = orig_cat.clone();
                 egui::ComboBox::from_id_salt("detail_cat")
                     .width(140.0)
                     .selected_text(egui::RichText::new(&cat_sel).font(m.hud(12.0)).color(accent))
@@ -69,10 +74,10 @@ pub fn render_detail(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) 
                             cat_sel = String::new();
                         }
                     });
-                if cat_sel != eff_cat && !cat_sel.is_empty() {
+                if cat_sel != orig_cat && !cat_sel.is_empty() {
                     app.set_category_override(&name, &cat_sel);
                     app.log(LogKind::Info, format!("分类修改: {} → {}", name, cat_sel));
-                } else if cat_sel.is_empty() && cat_sel != eff_cat {
+                } else if cat_sel.is_empty() && cat_sel != orig_cat {
                     let mut new_cat = String::new();
                     ui.add(egui::TextEdit::singleline(&mut new_cat).hint_text("输入新分类名…").font(m.hud(12.0)).desired_width(110.0));
                     if ui.button("确定").clicked() && !new_cat.trim().is_empty() {
@@ -80,7 +85,7 @@ pub fn render_detail(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) 
                         app.log(LogKind::Info, format!("分类修改: {} → {}", name, new_cat.trim()));
                     }
                 }
-                if eff_cat != def_cat {
+                if orig_cat != def_cat {
                     ui.label(egui::RichText::new("✎").font(m.hud(9.0)).color(GOLD_DIM));
                 }
             });
@@ -99,10 +104,9 @@ pub fn render_detail(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) 
             ui.add_space(4.0);
             if hud_button(ui, "清 除", Vec2::new(88.0, 26.0), m, DANGER, true).clicked() {
                 app.clear_slot(idx);
-                if app.model.armed == Some(idx) { app.model.armed = None; }
                 app.log(LogKind::Warn, format!("槽位 {} 已清除", idx + 1));
             }
-            if eff_cat != def_cat {
+            if orig_cat != def_cat {
                 ui.add_space(4.0);
                 if hud_button(ui, "重置分类", Vec2::new(88.0, 22.0), m, TEXT_SUB, false).clicked() {
                     app.clear_category_override(&name);

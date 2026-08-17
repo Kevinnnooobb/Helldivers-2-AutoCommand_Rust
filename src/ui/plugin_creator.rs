@@ -122,8 +122,7 @@ pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
         }
         if app.wiki.cache_exists && !fetching {
             if hud_button(ui, "清除缓存", Vec2::new(100.0, 30.0), m, DANGER, true).clicked() {
-                let path = wiki_fetcher::stratagem_cache_path();
-                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(crate::plugin::wiki_plugin_path());
                 app.wiki.cache_exists = false;
                 app.creator.status = "缓存已清除".into();
             }

@@ -130,14 +130,12 @@ fn send_key_event(scan_code: u16, extended: bool, key_up: bool) -> Result<(), St
 
 fn press_key(key: &str) -> Result<(), String> {
     let (sc, ext) = lookup_scancode(key)?;
-    send_key_event(sc, ext, false);
-    Ok(())
+    send_key_event(sc, ext, false)
 }
 
 fn release_key(key: &str) -> Result<(), String> {
     let (sc, ext) = lookup_scancode(key)?;
-    send_key_event(sc, ext, true);
-    Ok(())
+    send_key_event(sc, ext, true)
 }
 
 fn is_key_down(vk: u16) -> bool {

@@ -154,7 +154,7 @@ impl H2ACApp {
             library,
             capture: CaptureState::default(),
             plugins: PluginData { stratagems: plugin_stratagems },
-            wiki: WikiState { fetch_rx: None, fetch_status: String::new(), cache_exists: false },
+            wiki: WikiState { fetch_rx: None, fetch_status: String::new(), cache_exists: plugin::wiki_plugin_path().exists() },
             creator: CreatorState::default(),
             logs,
             show_settings: false,
@@ -315,7 +315,7 @@ impl eframe::App for H2ACApp {
                         // 注入运行时（此时分类已统一）
                         self.plugins.stratagems.retain(|p| !p.name.ends_with("(Wiki)"));
                         self.plugins.stratagems.extend(truly_new.clone());
-                        // 写入 _wiki_new.json
+                        // 写入 _wiki_new.json；全部命中内置时删除陈旧文件，避免重启后加载过期数据
                         if new_count > 0 {
                             let manifest = crate::stratagems::PluginManifest {
                                 id: plugin::WIKI_PLUGIN_ID.into(),
@@ -324,15 +324,24 @@ impl eframe::App for H2ACApp {
                                 stratagems: truly_new,
                             };
                             let _ = util::save_json(&plugin::wiki_plugin_path(), &manifest);
+                        } else {
+                            let _ = std::fs::remove_file(plugin::wiki_plugin_path());
                         }
-                        self.wiki.cache_exists = true;
+                        self.wiki.cache_exists = new_count > 0;
                         self.log(LogKind::Info, format!("Wiki 拉取完成，新增 {} 条 → plugins/{}", new_count, plugin::WIKI_PLUGIN_FILE));
                     } else {
                         self.log(LogKind::Warn, "Wiki 数据拉取失败，请检查网络");
                     }
                 }
             }
-            if still_active { self.wiki.fetch_rx = Some(rx); }
+            if still_active {
+                self.wiki.fetch_rx = Some(rx);
+                // 拉取进行中：定时驱动重绘以刷新进度显示
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            } else {
+                // 拉取完成/失败：立即重绘呈现最终状态
+                ctx.request_repaint();
+            }
         }
 
         if self.model.compact {
