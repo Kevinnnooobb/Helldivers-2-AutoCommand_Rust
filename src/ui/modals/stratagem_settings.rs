@@ -150,3 +150,27 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics
         app.stratagem_settings.visible = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_commands_maps_arrows_and_chinese() {
+        assert_eq!(
+            parse_command_text("↑, 下, left, 右"),
+            vec!["up", "down", "left", "right"]
+        );
+    }
+
+    #[test]
+    fn parse_commands_handles_empty_input() {
+        assert_eq!(parse_command_text(""), Vec::<String>::new());
+        assert_eq!(parse_command_text(" , , "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_commands_keeps_unknown_tokens() {
+        assert_eq!(parse_command_text("up,unknown"), vec!["up", "unknown"]);
+    }
+}

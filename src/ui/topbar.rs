@@ -42,19 +42,19 @@ pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context, 
     );
     bar.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if glyph_button(ui, Glyph::Close, 30.0, "关闭").clicked() {
+            if glyph_button(ui, Glyph::Close, m.glyph_btn(), "关闭").clicked() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            if glyph_button(ui, Glyph::Minimize, 30.0, "最小化").clicked() {
+            if glyph_button(ui, Glyph::Minimize, m.glyph_btn(), "最小化").clicked() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
-            if glyph_button(ui, Glyph::Compact, 30.0, "紧凑模式").clicked() {
+            if glyph_button(ui, Glyph::Compact, m.glyph_btn(), "紧凑模式").clicked() {
                 app.set_compact(ctx, true);
             }
-            if glyph_button(ui, Glyph::Gear, 30.0, "按键设置").clicked() {
+            if glyph_button(ui, Glyph::Gear, m.glyph_btn(), "按键设置").clicked() {
                 app.open_settings();
             }
-            if glyph_button(ui, if app.model.debug_mode { Glyph::Keyboard } else { Glyph::Search }, 30.0,
+            if glyph_button(ui, if app.model.debug_mode { Glyph::Keyboard } else { Glyph::Search }, m.glyph_btn(),
                 if app.model.debug_mode { "调试:开" } else { "调试:关" },
             ).clicked() {
                 app.model.debug_mode = !app.model.debug_mode;
@@ -63,7 +63,7 @@ pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context, 
 
             ui.add_space(10.0);
 
-            let (resp, lp) = ui.allocate_painter(Vec2::new(110.0, 32.0), Sense::click());
+            let (resp, lp) = ui.allocate_painter(Vec2::new(m.listening_btn_w(), m.listening_btn_h()), Sense::click());
             let hovered = resp.hovered();
             if hovered {
                 paint_chamfer(&lp, resp.rect.shrink(1.0), 5.0, BG_HOVER, Stroke::NONE);

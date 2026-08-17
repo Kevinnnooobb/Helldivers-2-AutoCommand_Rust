@@ -78,7 +78,7 @@ impl IconStore {
             if let Ok(entries) = std::fs::read_dir(&icon_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().map_or(true, |e| e != "png") { continue; }
+                    if path.extension().is_none_or(|e| e != "png") { continue; }
                     let key = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                     if map.contains_key(key) { continue; }
                     if let Ok(bytes) = std::fs::read(&path) {

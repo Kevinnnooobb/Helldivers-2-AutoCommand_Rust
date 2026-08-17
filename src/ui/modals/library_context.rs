@@ -22,21 +22,21 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetri
             hud_panel(ui, size, m, GOLD_DIM, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
 
-                if app.model.armed.is_some() {
-                    if hud_button(ui, "装入槽位", Vec2::new(ui.available_width(), 26.0), m, GOLD, false).clicked() {
-                        close = true;
-                        let name = lib_ctx.name.clone();
-                        if lib_ctx.is_plugin {
-                            if let Some(clone) = app.plugins.stratagems.iter()
-                                .find(|p| p.name == name).cloned()
-                            {
-                                let sref = StratagemRef::Plugin(&clone);
-                                app.assign_stratagem_ref(&sref);
-                            }
-                        } else if let Some(s) = STRATAGEMS.iter().find(|s| s.name == name) {
-                            let sref = StratagemRef::Base(s);
+                if app.model.armed.is_some()
+                    && hud_button(ui, "装入槽位", Vec2::new(ui.available_width(), 26.0), m, GOLD, false).clicked()
+                {
+                    close = true;
+                    let name = lib_ctx.name.clone();
+                    if lib_ctx.is_plugin {
+                        if let Some(clone) = app.plugins.stratagems.iter()
+                            .find(|p| p.name == name).cloned()
+                        {
+                            let sref = StratagemRef::Plugin(&clone);
                             app.assign_stratagem_ref(&sref);
                         }
+                    } else if let Some(s) = STRATAGEMS.iter().find(|s| s.name == name) {
+                        let sref = StratagemRef::Base(s);
+                        app.assign_stratagem_ref(&sref);
                     }
                 }
 
@@ -67,11 +67,11 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetri
                     app.stratagem_settings.original_name = lib_ctx.name.clone();
                 }
 
-                if lib_ctx.is_plugin {
-                    if hud_button(ui, "删 除", Vec2::new(ui.available_width(), 26.0), m, DANGER, true).clicked() {
-                        close = true;
-                        app.delete_plugin_stratagem(&lib_ctx.name);
-                    }
+                if lib_ctx.is_plugin
+                    && hud_button(ui, "删 除", Vec2::new(ui.available_width(), 26.0), m, DANGER, true).clicked()
+                {
+                    close = true;
+                    app.delete_plugin_stratagem(&lib_ctx.name);
                 }
             });
         });

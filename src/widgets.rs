@@ -301,3 +301,15 @@ pub fn key_capture_modal(
         });
     just_captured
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_strip_width_calculates() {
+        assert_eq!(arrow_strip_w(&[], 10.0, 2.0), 0.0);
+        assert_eq!(arrow_strip_w(&["↑"], 10.0, 2.0), 10.0);
+        assert_eq!(arrow_strip_w(&["↑", "↓"], 10.0, 2.0), 22.0);
+    }
+}

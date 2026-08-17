@@ -107,7 +107,7 @@ pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
         ui.label(egui::RichText::new("⟳ 拉取中…").font(m.hud(13.0)).color(GOLD));
     } else {
         let status = if app.wiki.cache_exists {
-            format!("已缓存数据 | 可刷新")
+            "已缓存数据 | 可刷新".to_string()
         } else {
             "尚未拉取过数据".into()
         };
@@ -120,12 +120,12 @@ pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
         if hud_button(ui, "拉取数据", Vec2::new(140.0, 30.0), m, GOLD, false).clicked() && !fetching {
             app.start_wiki_fetch();
         }
-        if app.wiki.cache_exists && !fetching {
-            if hud_button(ui, "清除缓存", Vec2::new(100.0, 30.0), m, DANGER, true).clicked() {
-                let _ = std::fs::remove_file(crate::plugin::wiki_plugin_path());
-                app.wiki.cache_exists = false;
-                app.creator.status = "缓存已清除".into();
-            }
+        if app.wiki.cache_exists && !fetching
+            && hud_button(ui, "清除缓存", Vec2::new(100.0, 30.0), m, DANGER, true).clicked()
+        {
+            let _ = std::fs::remove_file(crate::plugin::wiki_plugin_path());
+            app.wiki.cache_exists = false;
+            app.creator.status = "缓存已清除".into();
         }
     });
 

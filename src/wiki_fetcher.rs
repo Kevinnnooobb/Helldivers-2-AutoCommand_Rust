@@ -103,7 +103,11 @@ pub fn fetch_stratagems(
     });
 }
 
-/// 解析 Stratagem Hero Trainer JS 格式（手动状态机，零正则依赖）
+/// 解析 Stratagem Hero Trainer JS 格式（手动状态机，零正则依赖）。
+/// 真实文件结构：CATEGORIES 数组在前、战备数组在后；每个战备条目为
+/// `{ name: '...', code: [...], category_id: '...' }`。
+/// 关键约束：code/category_id 的搜索必须限定在「下一个 name 之前」，
+/// 否则分类名会与后续战备的 code 错误配对（生产数据中的潜伏 bug）。
 fn parse_js_data(body: &str) -> Result<Vec<PluginStratagem>, String> {
     let mut out = Vec::new();
     let mut pos = 0usize;
@@ -111,87 +115,64 @@ fn parse_js_data(body: &str) -> Result<Vec<PluginStratagem>, String> {
     let len = chars.len();
 
     while pos < len {
-        // 查找 "name: '"（不能加 `{ ` 前缀，因为 JS 中 { 和 name 之间有换行缩进）
         let start_pattern = "name: '";
-        if let Some(p) = find_pattern(&chars, pos, start_pattern) {
-            pos = p + start_pattern.len();
-            // 提取 name
-            let name_end = find_char(&chars, pos, '\'');
-            if name_end.is_none() { break; }
-            let name_end = name_end.unwrap();
-            let name = chars[pos..name_end].iter().collect::<String>();
-            pos = name_end + 1;
+        let Some(name_pos) = find_pattern(&chars, pos, start_pattern) else { break; };
+        pos = name_pos + start_pattern.len();
+        let Some(name_end) = find_char(&chars, pos, '\'') else { break; };
+        let name: String = chars[pos..name_end].iter().collect();
+        let after_name = name_end + 1;
 
-            // 查找 "code: [" — 只在 stratagem entries 中存在，CATEGORIES entries 会跳过
-            if let Some(p) = find_pattern(&chars, pos, "code: [") {
-                pos = p + "code: [".len();
-                let bracket_end = find_char(&chars, pos, ']');
-                if bracket_end.is_none() { break; }
-                let bracket_end = bracket_end.unwrap();
-                let code_str = chars[pos..bracket_end].iter().collect::<String>();
-                let code: Vec<String> = code_str
-                    .split(',')
-                    .map(|s| s.trim().trim_matches('\'').to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                pos = bracket_end + 1;
+        // 本条目边界：下一个 name 的位置（条目之间以此分隔）
+        let next_name = find_pattern(&chars, after_name, start_pattern);
+        let in_entry = |i: usize| next_name.is_none_or(|n| i < n);
 
-                if let Some(p) = find_pattern(&chars, pos, "category_id: '") {
-                    pos = p + "category_id: '".len();
-                    let cat_end = find_char(&chars, pos, '\'');
-                    if cat_end.is_none() { break; }
-                    let cat_end = cat_end.unwrap();
-                    let cat_id = chars[pos..cat_end].iter().collect::<String>();
-                    pos = cat_end + 1;
-
-                    let category = category_name(&cat_id);
-                    let icon = name_to_snake(&name);
-
-                    out.push(PluginStratagem {
-                        name: format!("{} (Wiki)", name),
-                        category,
-                        model: String::new(),
-                        command: code,
-                        description: String::new(),
-                        icon,
-                    });
-                } else {
-                    pos += 1;
-                }
-            } else {
-                // 没有 code: [ → 这是 CATEGORIES 条目，快速跳过
-                // 跳到下一个 } 或 name: ' 位置
-                if let Some(skip) = find_pattern(&chars, pos, "name: '") {
-                    pos = skip;
-                } else {
-                    pos += 1;
-                }
+        // code 必须属于当前条目；否则这是 CATEGORIES 条目，直接跳到下一个 name
+        let Some(code_pos) = find_pattern(&chars, after_name, "code: [").filter(|&i| in_entry(i)) else {
+            match next_name {
+                Some(n) => pos = n,
+                None => break,
             }
-        } else {
-            pos += 1;
-        }
+            continue;
+        };
+
+        pos = code_pos + "code: [".len();
+        let Some(bracket_end) = find_char(&chars, pos, ']') else { break; };
+        let code_str: String = chars[pos..bracket_end].iter().collect();
+        let code: Vec<String> = code_str
+            .split(',')
+            .map(|s| s.trim().trim_matches('\'').to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let after_code = bracket_end + 1;
+
+        // category_id 同样必须属于当前条目
+        let Some(cat_pos) = find_pattern(&chars, after_code, "category_id: '").filter(|&i| in_entry(i)) else {
+            // 有 code 但无 category：跳到下一个 name 继续扫描
+            pos = next_name.unwrap_or(len);
+            continue;
+        };
+        pos = cat_pos + "category_id: '".len();
+        let Some(cat_end) = find_char(&chars, pos, '\'') else { break; };
+        let cat_id: String = chars[pos..cat_end].iter().collect();
+        pos = cat_end + 1;
+
+        let category = category_name(&cat_id);
+        let icon = name_to_snake(&name);
+
+        out.push(PluginStratagem {
+            name: format!("{} (Wiki)", name),
+            category,
+            model: String::new(),
+            command: code,
+            description: String::new(),
+            icon,
+        });
     }
 
     if out.is_empty() {
         return Err("未解析到任何战备数据".into());
     }
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_local_file() {
-        let body = std::fs::read_to_string(
-            "C:/Users/Rin/AppData/Local/Temp/opencode/test_data.js"
-        ).expect("test data file not found");
-        let result = parse_js_data(&body);
-        assert!(result.is_ok(), "parse failed: {:?}", result.err());
-        let items = result.unwrap();
-        assert!(items.len() >= 90, "expected >=90 stratagems, got {}", items.len());
-    }
 }
 
 fn find_pattern(chars: &[char], start: usize, pat: &str) -> Option<usize> {
@@ -206,10 +187,7 @@ fn find_pattern(chars: &[char], start: usize, pat: &str) -> Option<usize> {
 }
 
 fn find_char(chars: &[char], start: usize, target: char) -> Option<usize> {
-    for i in start..chars.len() {
-        if chars[i] == target { return Some(i); }
-    }
-    None
+    (start..chars.len()).find(|&i| chars[i] == target)
 }
 
 /// 英文名 → snake_case 图标 key
@@ -255,4 +233,70 @@ pub fn start_fetch() -> (mpsc::Receiver<FetchProgress>, bool) {
     );
 
     (rx, has_cache)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 仓库内 fixture，替代原依赖外部绝对路径的测试数据文件
+    const SAMPLE: &str = include_str!("fixtures/wiki_sample.js");
+
+    #[test]
+    fn parse_fixture() {
+        let result = parse_js_data(SAMPLE);
+        assert!(result.is_ok(), "parse failed: {:?}", result.err());
+        let items = result.unwrap();
+        assert_eq!(items.len(), 3);
+
+        assert_eq!(items[0].name, "Reinforce (Wiki)");
+        assert_eq!(items[0].category, "Mission Stratagems");
+        assert_eq!(items[0].icon, "reinforce");
+        assert_eq!(items[0].command, vec!["up", "down", "right", "left", "up"]);
+
+        assert_eq!(items[1].name, "Eagle 500KG Bomb (Wiki)");
+        assert_eq!(items[1].category, "Eagle Strikes");
+        assert_eq!(items[1].icon, "eagle_500kg_bomb");
+
+        assert_eq!(items[2].name, "Railcannon Strike (Wiki)");
+        assert_eq!(items[2].category, "Orbital Strikes");
+    }
+
+    #[test]
+    fn parse_empty_or_garbage_returns_err() {
+        assert!(parse_js_data("").is_err());
+        assert!(parse_js_data("no stratagems here").is_err());
+    }
+
+    #[test]
+    fn category_name_maps_departments_and_falls_back() {
+        assert_eq!(category_name("d6e15727-9fe1-4961-8c5b-ea44a9bd81aa"), "Mission Stratagems");
+        assert_eq!(category_name("3958dc9e-737f-4377-85e9-fec4b6a6442a"), "Eagle Strikes");
+        assert_eq!(category_name("3958dc9e-742f-4377-85e9-fec4b6a6442a"), "Orbital Strikes");
+        assert_eq!(category_name("unknown-id"), "unknown-id");
+    }
+
+    #[test]
+    fn name_to_snake_maps_specials() {
+        assert_eq!(name_to_snake("Eagle 500KG Bomb"), "eagle_500kg_bomb");
+        assert_eq!(name_to_snake("RX-1 Railgun"), "rx_1_railgun");
+        assert_eq!(name_to_snake("  Spaced  Out "), "spaced_out");
+    }
+
+    #[test]
+    fn find_pattern_bounds() {
+        let chars: Vec<char> = "abc abc".chars().collect();
+        assert_eq!(find_pattern(&chars, 0, "abc"), Some(0));
+        assert_eq!(find_pattern(&chars, 1, "abc"), Some(4));
+        assert_eq!(find_pattern(&chars, 0, "xyz"), None);
+        assert_eq!(find_pattern(&chars, 0, "abcabcabc"), None);
+    }
+
+    #[test]
+    fn find_char_bounds() {
+        let chars: Vec<char> = "hello".chars().collect();
+        assert_eq!(find_char(&chars, 0, 'l'), Some(2));
+        assert_eq!(find_char(&chars, 3, 'l'), Some(3));
+        assert_eq!(find_char(&chars, 0, 'z'), None);
+    }
 }

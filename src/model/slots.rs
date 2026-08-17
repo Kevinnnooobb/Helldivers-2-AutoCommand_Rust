@@ -1,12 +1,29 @@
+use std::collections::HashMap;
 use std::thread;
 
 use crate::config::{save_config, SLOT_COUNT};
 use crate::executor;
 use crate::H2ACApp;
 use crate::LogKind;
-use crate::stratagems::{self, command_to_string, dir_to_arrow, StratagemRef, STRATAGEMS};
+use crate::stratagems::{self, command_to_string, dir_to_arrow, PluginStratagem, StratagemRef, STRATAGEMS};
+
+/// 从 slot 的下一位起循环查找下一个空槽位（内置列表为空且非插件槽）
+fn next_free_slot(
+    slots: &[Option<usize>],
+    plugin_slots: &HashMap<usize, PluginStratagem>,
+    slot: usize,
+) -> Option<usize> {
+    (0..SLOT_COUNT)
+        .map(|i| (slot + 1 + i) % SLOT_COUNT)
+        .find(|&i| slots[i].is_none() && !plugin_slots.contains_key(&i))
+}
 
 impl H2ACApp {
+    /// 装填后：武装态推进到下一个空槽（无空槽则以当前槽为详情槽）
+    fn advance_armed(&mut self, slot: usize) {
+        self.model.armed = next_free_slot(&self.model.slots, &self.model.plugin_slots, slot);
+        self.model.detail_slot = Some(self.model.armed.unwrap_or(slot));
+    }
     pub fn execute_slot(&mut self, slot: usize) {
         if let Some(p) = self.model.plugin_slots.get(&slot) {
             let name = p.name.clone();
@@ -46,14 +63,7 @@ impl H2ACApp {
         if let Some(idx) = STRATAGEMS.iter().position(|x| x.name == s.name && x.model == s.model) {
             self.set_slot(slot, idx);
             self.log(LogKind::Info, format!("槽位 {} ← {} [{}]", slot + 1, s.name, s.model));
-            self.model.armed = (0..SLOT_COUNT)
-                .map(|i| (slot + 1 + i) % SLOT_COUNT)
-                .find(|&i| self.model.slots[i].is_none());
-            if let Some(a) = self.model.armed {
-                self.model.detail_slot = Some(a);
-            } else {
-                self.model.detail_slot = Some(slot);
-            }
+            self.advance_armed(slot);
         }
     }
 
@@ -66,13 +76,9 @@ impl H2ACApp {
                     return;
                 };
                 self.model.plugin_slots.insert(slot, (*p).clone());
-                self.model.slots[slot] = Some(usize::MAX);
+                self.model.slots[slot] = Some(crate::stratagems::PLUGIN_SLOT_MARK);
                 self.log(LogKind::Info, format!("槽位 {} <- {} (插件)", slot + 1, p.name));
-                self.model.armed = (0..SLOT_COUNT)
-                    .map(|i| (slot + 1 + i) % SLOT_COUNT)
-                    .find(|&i| self.model.slots[i].is_none() && !self.model.plugin_slots.contains_key(&i));
-                if let Some(a) = self.model.armed { self.model.detail_slot = Some(a); }
-                else { self.model.detail_slot = Some(slot); }
+                self.advance_armed(slot);
             }
         }
     }
@@ -112,7 +118,7 @@ impl H2ACApp {
     }
 
     pub fn slot_filled(&self, idx: usize) -> bool {
-        self.model.slots.get(idx).map_or(false, |s| s.is_some())
+        self.model.slots.get(idx).is_some_and(|s| s.is_some())
             || self.model.plugin_slots.contains_key(&idx)
     }
 
@@ -141,8 +147,44 @@ impl H2ACApp {
     /// 槽位内的内置战备（插件槽位或越界索引返回 None）
     fn base_slot(&self, idx: usize) -> Option<&'static crate::stratagems::Stratagem> {
         let si = self.model.slots.get(idx).copied().flatten()?;
-        if si == usize::MAX { return None; }
+        if si == crate::stratagems::PLUGIN_SLOT_MARK { return None; }
         STRATAGEMS.get(si)
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plugin(name: &str) -> PluginStratagem {
+        PluginStratagem {
+            name: name.into(),
+            category: "Test".into(),
+            model: String::new(),
+            command: Vec::new(),
+            description: String::new(),
+            icon: String::new(),
+        }
+    }
+
+    #[test]
+    fn next_free_skips_filled_and_plugin_slots() {
+        let mut slots = vec![None; SLOT_COUNT];
+        slots[0] = Some(1);
+        let mut plugin_slots = HashMap::new();
+        plugin_slots.insert(2, plugin("p"));
+        assert_eq!(next_free_slot(&slots, &plugin_slots, 0), Some(1));
+        slots[1] = Some(2);
+        assert_eq!(next_free_slot(&slots, &plugin_slots, 0), Some(3));
+    }
+
+    #[test]
+    fn next_free_wraps_and_none_when_full() {
+        let mut slots = vec![None; SLOT_COUNT];
+        slots[9] = Some(1);
+        assert_eq!(next_free_slot(&slots, &HashMap::new(), 9), Some(0));
+        for s in slots.iter_mut() { *s = Some(1); }
+        assert_eq!(next_free_slot(&slots, &HashMap::new(), 0), None);
+    }
 }

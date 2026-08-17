@@ -207,3 +207,27 @@ fn execute_command(config: &Config, command: &[&str]) -> Result<(), String> {
         None => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scancode_lookup_aliases_and_case() {
+        assert!(lookup_scancode("w").is_ok());
+        assert!(lookup_scancode("W").is_ok());
+        assert!(lookup_scancode("↑").is_ok());
+        assert!(lookup_scancode("up").is_ok());
+        assert_eq!(lookup_scancode("escape").unwrap(), lookup_scancode("esc").unwrap());
+        assert_eq!(lookup_scancode("control").unwrap(), lookup_scancode("ctrl").unwrap());
+        assert_eq!(lookup_scancode("return").unwrap(), lookup_scancode("enter").unwrap());
+        assert!(lookup_scancode("not-a-key").is_err());
+    }
+
+    #[test]
+    fn scancode_map_covers_all_direction_forms() {
+        for key in ["↑", "↓", "←", "→", "up", "down", "left", "right"] {
+            assert!(lookup_scancode(key).is_ok(), "missing scancode for {key}");
+        }
+    }
+}

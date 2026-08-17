@@ -157,3 +157,26 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     }
     CallNextHookEx(None, code, wparam, lparam)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vk_names_digits_letters_and_fkeys() {
+        assert_eq!(vk_to_name(0x30), "0");
+        assert_eq!(vk_to_name(0x39), "9");
+        assert_eq!(vk_to_name(0x41), "a");
+        assert_eq!(vk_to_name(0x5A), "z");
+        assert_eq!(vk_to_name(0x70), "f1");
+        assert_eq!(vk_to_name(0x7B), "f12");
+        assert_eq!(vk_to_name(0x20), "space");
+        assert_eq!(vk_to_name(0x1B), "esc");
+        assert_eq!(vk_to_name(0x60), "numpad0");
+    }
+
+    #[test]
+    fn vk_names_unknown_falls_back() {
+        assert_eq!(vk_to_name(0x1234), "vk(4660)");
+    }
+}

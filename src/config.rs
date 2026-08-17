@@ -93,7 +93,7 @@ fn sanitize_loadout(loadout: &mut Vec<Option<usize>>) {
     let max_idx = crate::stratagems::STRATAGEMS.len();
     for slot in loadout.iter_mut() {
         if let Some(v) = slot {
-            if *v >= max_idx && *v != usize::MAX {
+            if *v >= max_idx && *v != crate::stratagems::PLUGIN_SLOT_MARK {
                 *slot = None;
             }
         }
@@ -128,7 +128,7 @@ pub fn list_profiles() -> Vec<String> {
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
                 .filter_map(|e| {
                     e.path()
                         .file_stem()
@@ -166,4 +166,50 @@ pub fn load_profile(name: &str) -> Option<Profile> {
 pub fn delete_profile(name: &str) {
     let path = profiles_dir().join(format!("{name}.json"));
     let _ = fs::remove_file(&path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults_from_partial_json() {
+        let cfg: Config = serde_json::from_str(r#"{ "loadout": [1] }"#).unwrap();
+        assert_eq!(cfg.key_bindings.get("↑").map(String::as_str), Some("w"));
+        assert_eq!(cfg.stratagem_key, "ctrl");
+        assert_eq!(cfg.key_delay, 0.08);
+        assert_eq!(cfg.pre_delay, 0.12);
+        assert!(cfg.listening_enabled);
+        assert!(cfg.slot_hotkeys.is_empty());
+    }
+
+    #[test]
+    fn sanitize_resizes_and_clears_out_of_range() {
+        let mark = crate::stratagems::PLUGIN_SLOT_MARK;
+        let cfg = Config {
+            loadout: vec![Some(0), Some(1), Some(999_999), Some(mark)],
+            ..Config::default()
+        }
+        .sanitize();
+        assert_eq!(cfg.loadout.len(), SLOT_COUNT);
+        assert_eq!(cfg.loadout[0], Some(0));
+        assert_eq!(cfg.loadout[1], Some(1));
+        // 越界索引 → 空槽
+        assert_eq!(cfg.loadout[2], None);
+        // 插件哨兵必须保留（Profile 用它表达插件槽位）
+        assert_eq!(cfg.loadout[3], Some(mark));
+    }
+
+    #[test]
+    fn profile_roundtrip_json() {
+        let p = Profile {
+            loadout: vec![Some(2), None],
+            slot_hotkeys: HashMap::from([("0".into(), "f1".into())]),
+            plugin_slots: HashMap::new(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Profile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.loadout, p.loadout);
+        assert_eq!(back.slot_hotkeys, p.slot_hotkeys);
+    }
 }

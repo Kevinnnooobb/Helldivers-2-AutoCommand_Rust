@@ -169,7 +169,7 @@ fn render_library_row(app: &H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMetric
         .model
         .armed
         .and_then(|a| app.slot_name(a))
-        .map_or(false, |n| n == s.name());
+        .is_some_and(|n| n == s.name());
 
     if resp.hovered() {
         paint_chamfer(&p, rect, 5.0, BG_HOVER, Stroke::NONE);

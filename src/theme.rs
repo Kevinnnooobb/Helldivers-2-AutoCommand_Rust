@@ -41,6 +41,9 @@ pub const DESIGN_H: f32 = 640.0;
 pub const COMPACT_DESIGN_W: f32 = 554.0;
 pub const COMPACT_DESIGN_H: f32 = 56.0;
 
+/// 执行闪光衰减时长（秒）
+pub const FLASH_DURATION: f32 = 0.7;
+
 /// 分类对应强调色
 pub fn category_color(cat: &str) -> Color32 {
     match cat {
@@ -210,7 +213,9 @@ impl UiMetrics {
                 return f;
             }
         }
-        if bold { self.hud_b(*sizes.last().unwrap()) } else { self.hud(*sizes.last().unwrap()) }
+        // sizes 为空或全部超出时退回合理默认，避免 panic
+        let fallback = sizes.last().copied().unwrap_or(12.0);
+        if bold { self.hud_b(fallback) } else { self.hud(fallback) }
     }
 }
 

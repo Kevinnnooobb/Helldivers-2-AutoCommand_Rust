@@ -103,7 +103,7 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
 
     let now = ui.ctx().input(|i| i.time);
     if let Some(&t0) = app.model.flash.get(&idx) {
-        let k = (now - t0) as f32 / 0.7;
+        let k = (now - t0) as f32 / FLASH_DURATION;
         if k < 1.0 {
             let a = ((1.0 - k) * 140.0) as u8;
             p.add(egui::Shape::convex_polygon(
@@ -120,8 +120,8 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
         let name = app.slot_name(idx).unwrap_or_default();
         let icon_key = app.slot_icon(idx).unwrap_or("");
         let cmd = app.slot_command(idx);
-        let eff_cat = app.effective_category(&name, &app.slot_category(idx).unwrap_or_default());
-        let accent = category_color(&eff_cat);
+        let eff_cat = app.effective_category(name, app.slot_category(idx).unwrap_or_default());
+        let accent = category_color(eff_cat);
 
         let icon_rect = Rect::from_center_size(
             Pos2::new(rect.center().x, rect.top() + m.slot_icon_y()),
@@ -136,11 +136,11 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
             );
         }
 
-        let font = m.fit_font(&p, &name, rect.width() - 14.0, &[13.0, 11.5, 10.0], false);
+        let font = m.fit_font(&p, name, rect.width() - 14.0, &[13.0, 11.5, 10.0], false);
         p.text(
             Pos2::new(rect.center().x, rect.top() + m.slot_name_y()),
             Align2::CENTER_TOP,
-            &name,
+            name,
             font,
             TEXT,
         );

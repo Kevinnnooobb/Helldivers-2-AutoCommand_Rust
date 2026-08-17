@@ -44,7 +44,7 @@ impl H2ACApp {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for idx in 0..config::SLOT_COUNT {
                         self.render_compact_tile(ui, idx, &m);
-                        if idx < 9 {
+                        if idx + 1 < config::SLOT_COUNT {
                             ui.add_space(gap);
                         }
                     }
@@ -105,7 +105,7 @@ impl H2ACApp {
             p.circle_filled(
                 Pos2::new(rect.right() - 5.0, rect.bottom() - 5.0),
                 2.0,
-                category_color(&self.slot_category(idx).unwrap_or_default()),
+                category_color(self.slot_category(idx).unwrap_or_default()),
             );
         } else {
             p.text(
@@ -129,7 +129,7 @@ impl H2ACApp {
 
         let now = ui.ctx().input(|i| i.time);
         if let Some(&t0) = self.model.flash.get(&idx) {
-            let k = (now - t0) as f32 / 0.7;
+            let k = (now - t0) as f32 / FLASH_DURATION;
             if k < 1.0 {
                 let a = ((1.0 - k) * 160.0) as u8;
                 p.add(egui::Shape::convex_polygon(

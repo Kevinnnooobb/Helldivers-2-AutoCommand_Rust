@@ -299,6 +299,8 @@ impl eframe::App for H2ACApp {
         for v in self.model.flash.values_mut() {
             if *v == 0.0 { *v = now; }
         }
+        // 清理已结束的闪光动画条目
+        self.model.flash.retain(|_, &mut v| (now - v) as f32 < theme::FLASH_DURATION);
         if let Some(rx) = self.wiki.fetch_rx.take() {
             let mut still_active = true;
             while let Ok(progress) = rx.try_recv() {
@@ -376,7 +378,7 @@ fn main() -> Result<(), eframe::Error> {
             .ok()
             .map(|i| i.to_rgba8());
         img.map(|rgba| {
-            let (w, h) = (rgba.width() as u32, rgba.height() as u32);
+            let (w, h) = (rgba.width(), rgba.height());
             egui::IconData {
                 rgba: rgba.into_raw(),
                 width: w,

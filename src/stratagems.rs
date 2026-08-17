@@ -332,6 +332,9 @@ pub struct PluginStratagem {
     pub icon: String,
 }
 
+/// 槽位列表中的插件占位哨兵（对应 plugin_slots 映射中的条目）
+pub const PLUGIN_SLOT_MARK: usize = usize::MAX;
+
 /// 统合引用：基础内置战备（静态引用）或插件战备（自有数据引用）
 pub enum StratagemRef<'a> {
     Base(&'static Stratagem),
@@ -390,3 +393,50 @@ pub struct PluginManifest {
 }
 
 fn default_true() -> bool { true }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direction_mapping() {
+        assert_eq!(dir_to_arrow("up"), "↑");
+        assert_eq!(dir_to_arrow("down"), "↓");
+        assert_eq!(dir_to_arrow("left"), "←");
+        assert_eq!(dir_to_arrow("right"), "→");
+        assert_eq!(dir_to_arrow("??"), "?");
+        assert_eq!(dir_to_arrow_or_raw("up"), "↑");
+        assert_eq!(dir_to_arrow_or_raw("w"), "w");
+    }
+
+    #[test]
+    fn command_to_string_joins() {
+        assert_eq!(command_to_string(&["↑", "↓", "←"]), "↑↓←");
+        assert_eq!(command_to_string(&[]), "");
+    }
+
+    #[test]
+    fn search_filters_by_name_and_model() {
+        assert!(search("增援").iter().any(|s| s.name == "增援"));
+        assert!(search("不存在的战备xyz").is_empty());
+        assert!(search("").is_empty());
+    }
+
+    #[test]
+    fn categories_are_unique_and_first_is_mission() {
+        let cats = get_categories();
+        assert!(!cats.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        for c in &cats {
+            assert!(seen.insert(*c), "duplicate category {c}");
+        }
+        assert_eq!(cats[0], CAT_MISSION);
+    }
+
+    #[test]
+    fn get_by_category_only_matches() {
+        for s in get_by_category(CAT_EAGLE) {
+            assert_eq!(s.category, CAT_EAGLE);
+        }
+    }
+}
