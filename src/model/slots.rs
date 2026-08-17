@@ -9,23 +9,31 @@ use crate::stratagems::{self, command_to_string, dir_to_arrow, StratagemRef, STR
 impl H2ACApp {
     pub fn execute_slot(&mut self, slot: usize) {
         if let Some(p) = self.model.plugin_slots.get(&slot) {
+            let name = p.name.clone();
             let log_msg = format!("执行 {} [{}] {}", p.name, p.model, p.command.join(""));
             let cmd = p.command.clone();
             self.log(LogKind::Exec, log_msg);
             self.model.flash.insert(slot, 0.0);
             let cg = self.model.config.clone();
-            thread::spawn(move || executor::execute_plugin(&cg, &cmd));
+            thread::spawn(move || {
+                if let Err(e) = executor::execute_plugin(&cg, &cmd) {
+                    crate::util::log_to_file("exec_error.log", &format!("执行 {name} 失败: {e}"));
+                }
+            });
             return;
         }
-        if let Some(idx) = self.model.slots[slot] {
-            if idx != usize::MAX {
-                if let Some(s) = STRATAGEMS.get(idx) {
-                    self.log(LogKind::Exec, format!("执行 {} [{}] {}", s.name, s.model, command_to_string(&s.command)));
-                    self.model.flash.insert(slot, 0.0);
-                    let sc = s.clone();
-                    let cg = self.model.config.clone();
-                    thread::spawn(move || executor::execute_stratagem(&sc, &cg));
-                }
+        if let Some(Some(idx)) = self.model.slots.get(slot) {
+            if let Some(s) = STRATAGEMS.get(*idx) {
+                let name = s.name;
+                self.log(LogKind::Exec, format!("执行 {} [{}] {}", s.name, s.model, command_to_string(s.command)));
+                self.model.flash.insert(slot, 0.0);
+                let sc = s.clone();
+                let cg = self.model.config.clone();
+                thread::spawn(move || {
+                    if let Err(e) = executor::execute_stratagem(&sc, &cg) {
+                        crate::util::log_to_file("exec_error.log", &format!("执行 {name} 失败: {e}"));
+                    }
+                });
             }
         }
     }
@@ -76,11 +84,13 @@ impl H2ACApp {
     }
 
     pub fn clear_slot(&mut self, slot: usize) {
+        if slot >= SLOT_COUNT { return; }
         self.model.slots[slot] = None;
         self.model.plugin_slots.remove(&slot);
         self.model.config.loadout[slot] = None;
         self.model.config.slot_hotkeys.remove(&slot.to_string());
         save_config(&self.model.config);
+        self.sync_hotkey_map();
     }
 
     pub fn slot_filled(&self, idx: usize) -> bool {

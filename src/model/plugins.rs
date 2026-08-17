@@ -35,6 +35,7 @@ impl H2ACApp {
             self.model.config.slot_hotkeys = pr.slot_hotkeys;
             self.model.config.last_profile = name.to_string();
             config::save_config(&self.model.config);
+            self.sync_hotkey_map();
             self.model.current_profile = name.to_string();
             self.model.armed = None;
             self.model.detail_slot = None;

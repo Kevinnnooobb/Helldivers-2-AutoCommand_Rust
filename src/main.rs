@@ -100,7 +100,7 @@ pub struct H2ACApp {
     pub library_context: Option<LibraryContext>,
     pub stratagem_settings: StratagemSettings,
     pub hotkey_rx: Option<mpsc::Receiver<usize>>,
-    pub hotkey_run: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub hotkey: Option<hotkey::HotkeyListener>,
 }
 
 impl H2ACApp {
@@ -166,7 +166,7 @@ impl H2ACApp {
             library_context: None,
             stratagem_settings: StratagemSettings { visible: false, name: String::new(), icon_key: String::new(), command_text: String::new(), description: String::new(), category: String::new(), is_plugin: false, original_name: String::new() },
             hotkey_rx: None,
-            hotkey_run: None,
+            hotkey: None,
         };
 
         if app.model.listening {
@@ -213,23 +213,35 @@ impl H2ACApp {
         }
     }
 
-    fn start_hotkeys(&mut self) {
-        let map: HashMap<String, usize> = self.model.config.slot_hotkeys.iter()
+    /// 由 config.slot_hotkeys 构建 键名→槽位 映射（非法槽位/键名被过滤）
+    fn hotkey_map(config: &config::Config) -> HashMap<String, usize> {
+        config
+            .slot_hotkeys
+            .iter()
             .filter_map(|(k, v)| Some((v.clone(), k.parse::<usize>().ok()?)))
             .filter(|(_, s)| *s < SLOT_COUNT)
-            .collect();
-        let map = Arc::new(Mutex::new(map));
+            .collect()
+    }
+
+    /// 监听运行中热键配置变化后调用，使运行中的钩子立即使用新映射
+    pub fn sync_hotkey_map(&self) {
+        if self.hotkey.is_some() {
+            hotkey::update_map(&Self::hotkey_map(&self.model.config));
+        }
+    }
+
+    fn start_hotkeys(&mut self) {
+        let map = Arc::new(Mutex::new(Self::hotkey_map(&self.model.config)));
         let (tx, rx) = mpsc::channel();
-        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        hotkey::start(map, tx, running.clone());
+        self.hotkey = Some(hotkey::HotkeyListener::start(map, tx));
         self.hotkey_rx = Some(rx);
-        self.hotkey_run = Some(running);
     }
 
     fn stop_hotkeys(&mut self) {
-        if let Some(ref r) = self.hotkey_run { r.store(false, std::sync::atomic::Ordering::Relaxed); }
+        if let Some(mut listener) = self.hotkey.take() {
+            listener.stop();
+        }
         self.hotkey_rx = None;
-        self.hotkey_run = None;
     }
 
     pub fn toggle_listening(&mut self) {
@@ -270,6 +282,9 @@ impl eframe::App for H2ACApp {
 
         if let Some(ref rx) = self.hotkey_rx {
             if let Ok(s) = rx.try_recv() { self.execute_slot(s); }
+        }
+        if let Some(listener) = &mut self.hotkey {
+            listener.poll();
         }
         let now = ctx.input(|i| i.time);
         for v in self.model.flash.values_mut() {

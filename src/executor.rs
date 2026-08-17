@@ -12,7 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use crate::config::Config;
-use crate::stratagems::Stratagem;
+use crate::stratagems::{dir_to_arrow_or_raw, Stratagem};
 
 type ScanData = (u16, bool);
 
@@ -99,7 +99,7 @@ fn lookup_scancode(key: &str) -> Result<ScanData, String> {
         .ok_or_else(|| format!("未知按键: {key}"))
 }
 
-fn send_key_event(scan_code: u16, extended: bool, key_up: bool) {
+fn send_key_event(scan_code: u16, extended: bool, key_up: bool) -> Result<(), String> {
     let mut flags = KEYEVENTF_SCANCODE;
     if extended {
         flags |= KEYEVENTF_EXTENDEDKEY;
@@ -121,9 +121,11 @@ fn send_key_event(scan_code: u16, extended: bool, key_up: bool) {
         },
     };
 
-    unsafe {
-        SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    let inserted = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
+    if inserted == 0 {
+        return Err(format!("SendInput 注入失败 (scancode 0x{scan_code:02X})"));
     }
+    Ok(())
 }
 
 fn press_key(key: &str) -> Result<(), String> {
@@ -143,38 +145,44 @@ fn is_key_down(vk: u16) -> bool {
 }
 
 /// 执行战备指令序列（内置版）
-pub fn execute_stratagem(s: &Stratagem, config: &Config) {
-    execute_command(config, s.command);
+pub fn execute_stratagem(s: &Stratagem, config: &Config) -> Result<(), String> {
+    execute_command(config, s.command)
 }
 
 /// 执行插件战备指令序列（字符串数组版本）
-pub fn execute_plugin(config: &Config, command: &[String]) {
-    let arrows: Vec<&str> = command.iter().map(|c| match c.as_str() {
-        "up" => "↑", "down" => "↓", "left" => "←", "right" => "→",
-        _ => c.as_str(),
-    }).collect();
-    execute_command(config, &arrows);
+pub fn execute_plugin(config: &Config, command: &[String]) -> Result<(), String> {
+    let arrows: Vec<&str> = command.iter().map(|c| dir_to_arrow_or_raw(c.as_str())).collect();
+    execute_command(config, &arrows)
+}
+
+/// 记录首个错误但继续完成整个序列（保证按键恢复与修饰键还原不被跳过）
+fn record_first(err: &mut Option<String>, result: Result<(), String>) {
+    if let Err(e) = result {
+        if err.is_none() {
+            *err = Some(e);
+        }
+    }
 }
 
 /// 核心执行逻辑：按配置的键位映射和延迟，逐键注入方向序列
-fn execute_command(config: &Config, command: &[&str]) {
+fn execute_command(config: &Config, command: &[&str]) -> Result<(), String> {
     let delay = config.key_delay;
     let pre_delay = config.pre_delay;
-    let stratagem_key = config.stratagem_key.clone();
-    let key_bindings = config.key_bindings.clone();
+    let stratagem_key = config.stratagem_key.as_str();
 
-    let _ = press_key(&stratagem_key);
+    let mut first_err: Option<String> = None;
+    record_first(&mut first_err, press_key(stratagem_key));
     thread::sleep(Duration::from_secs_f64(pre_delay));
 
     for dir in command.iter() {
-        let mapped = key_bindings.get(*dir).cloned().unwrap_or_else(|| dir.to_string());
+        let mapped = config.key_bindings.get(*dir).map(String::as_str).unwrap_or(*dir);
         thread::sleep(Duration::from_secs_f64(delay));
-        let _ = press_key(&mapped);
+        record_first(&mut first_err, press_key(mapped));
         thread::sleep(Duration::from_secs_f64(delay));
-        let _ = release_key(&mapped);
+        record_first(&mut first_err, release_key(mapped));
     }
 
-    let _ = release_key(&stratagem_key);
+    record_first(&mut first_err, release_key(stratagem_key));
 
     let modifiers: [(u16, &str); 4] = [
         (VK_LSHIFT.0, "left shift"),
@@ -185,14 +193,19 @@ fn execute_command(config: &Config, command: &[&str]) {
     let mut released: Vec<String> = Vec::new();
     for (vk, name) in &modifiers {
         if is_key_down(*vk) {
-            let (sc, ext) = lookup_scancode(name).unwrap();
-            send_key_event(sc, ext, true);
+            let (sc, ext) = lookup_scancode(name).expect("修饰键名必须存在于扫描码表");
+            let _ = send_key_event(sc, ext, true);
             released.push(name.to_string());
         }
     }
     thread::sleep(Duration::from_millis(5));
     for name in &released {
-        let (sc, ext) = lookup_scancode(name).unwrap();
-        send_key_event(sc, ext, false);
+        let (sc, ext) = lookup_scancode(name).expect("修饰键名必须存在于扫描码表");
+        let _ = send_key_event(sc, ext, false);
+    }
+
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
 }

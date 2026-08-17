@@ -18,6 +18,7 @@ pub fn render_capture_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                     .slot_hotkeys
                     .insert(slot.to_string(), key_name.to_string());
                 config::save_config(&app_ref.model.config);
+                app_ref.sync_hotkey_map();
                 app_ref.log(LogKind::Info, format!("槽位 {} 快捷键: {}", slot + 1, key_name));
                 app_ref.capture.capturing = None;
             }

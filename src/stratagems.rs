@@ -297,7 +297,7 @@ pub fn command_to_string(cmd: &[&str]) -> String {
     cmd.join("")
 }
 
-/// 英文字符串方向 → 箭头符号
+/// 英文字符串方向 → 箭头符号（显示层，未知方向显示为 ?）
 pub fn dir_to_arrow(dir: &str) -> &'static str {
     match dir {
         "up" => "↑",
@@ -305,6 +305,17 @@ pub fn dir_to_arrow(dir: &str) -> &'static str {
         "left" => "←",
         "right" => "→",
         _ => "?",
+    }
+}
+
+/// 执行层方向归一化：英文方向词 → 箭头；未知词原样透传（保持历史执行语义）
+pub fn dir_to_arrow_or_raw(dir: &str) -> &str {
+    match dir {
+        "up" => "↑",
+        "down" => "↓",
+        "left" => "←",
+        "right" => "→",
+        _ => dir,
     }
 }
 
