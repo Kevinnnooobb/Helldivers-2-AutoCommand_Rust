@@ -256,7 +256,7 @@ pub fn save_plugin_from_creator(app: &mut H2ACApp) {
 }
 
 pub fn reload_plugins(app: &mut H2ACApp) {
-    let stratagems = plugin::load_all();
-    app.plugins.stratagems.retain(|p| !p.name.starts_with("(Plugin)"));
-    app.plugins.stratagems.extend(stratagems);
+    // 整体替换：避免重复追加（原 retain 匹配的 "(Plugin)" 前缀从未被任何代码生成，属空操作，
+    // 导致每次保存插件后库中条目翻倍）
+    app.plugins.stratagems = plugin::load_all();
 }

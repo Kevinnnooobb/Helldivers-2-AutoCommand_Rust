@@ -4,6 +4,23 @@ use crate::theme::*;
 use crate::widgets::*;
 use crate::LogKind;
 
+/// 解析用户输入的指令序列："↑, ↓, 左" → ["up","down","left"]
+fn parse_command_text(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|s| {
+            let t = s.trim();
+            match t {
+                "↑" | "上" => "up".to_string(),
+                "↓" | "下" => "down".to_string(),
+                "←" | "左" => "left".to_string(),
+                "→" | "右" => "right".to_string(),
+                _ => t.to_string(),
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
     if !app.stratagem_settings.visible {
         return;
@@ -84,22 +101,10 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics
                         let desc = app.stratagem_settings.description.clone();
                         let cat = app.stratagem_settings.category.clone();
                         let orig = app.stratagem_settings.original_name.clone();
-                        let cmd: Vec<String> = app.stratagem_settings.command_text
-                            .split(',')
-                            .map(|s| {
-                                let t = s.trim();
-                                match t {
-                                    "↑" | "上" => "up".to_string(),
-                                    "↓" | "下" => "down".to_string(),
-                                    "←" | "左" => "left".to_string(),
-                                    "→" | "右" => "right".to_string(),
-                                    _ => t.to_string(),
-                                }
-                            })
-                            .filter(|s| !s.is_empty())
-                            .collect();
+                        let cmd = parse_command_text(&app.stratagem_settings.command_text);
 
                         if app.stratagem_settings.is_plugin {
+                            // 运行时更新
                             for p in &mut app.plugins.stratagems {
                                 if p.name == orig {
                                     p.name = name.clone();
@@ -109,30 +114,23 @@ pub fn render_stratagem_settings(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics
                                     p.command = cmd.clone();
                                 }
                             }
-                            let dir = crate::plugin::plugins_dir();
-                            let _ = std::fs::create_dir_all(&dir);
-                            if let Ok(entries) = std::fs::read_dir(&dir) {
-                                for entry in entries.flatten() {
-                                    let path = entry.path();
-                                    if path.extension().map_or(true, |e| e != "json") { continue; }
-                                    if let Ok(data) = std::fs::read_to_string(&path) {
-                                        if data.contains(&format!("\"name\": \"{}\"", orig)) {
-                                            if let Ok(mut m) = serde_json::from_str::<crate::stratagems::PluginManifest>(&data) {
-                                                for s in &mut m.stratagems {
-                                                    if s.name == orig {
-                                                        s.name = name.clone();
-                                                        s.icon = icon.clone();
-                                                        s.description = desc.clone();
-                                                        s.category = cat.clone();
-                                                        s.command = cmd.clone();
-                                                    }
-                                                }
-                                                let _ = std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap_or_default());
-                                            }
-                                        }
+                            // 磁盘持久化：结构化精确匹配（不再用 contains 字符串猜测）
+                            let (f_name, f_icon, f_desc, f_cat, f_cmd, f_orig) =
+                                (name.clone(), icon.clone(), desc.clone(), cat.clone(), cmd.clone(), orig.clone());
+                            let _ = crate::plugin::rewrite_stratagems(&mut |strats| {
+                                let mut changed = false;
+                                for s in strats.iter_mut() {
+                                    if s.name == f_orig {
+                                        s.name = f_name.clone();
+                                        s.icon = f_icon.clone();
+                                        s.description = f_desc.clone();
+                                        s.category = f_cat.clone();
+                                        s.command = f_cmd.clone();
+                                        changed = true;
                                     }
                                 }
-                            }
+                                changed
+                            });
                         } else {
                             app.set_category_override(&orig, &cat);
                         }

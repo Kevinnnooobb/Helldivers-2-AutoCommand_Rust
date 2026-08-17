@@ -1,10 +1,25 @@
 use eframe::egui::{self, Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, Vec2};
-use crate::stratagems::{OwnedStratagem, StratagemRef};
+use crate::stratagems::{PluginStratagem, StratagemRef};
 use crate::theme::*;
 use crate::widgets::*;
 use crate::H2ACApp;
 use crate::LibraryContext;
 use crate::ui::common::cat_short;
+
+/// 库行交互结果：渲染时只读，动作在渲染循环外统一应用（避免每帧克隆插件数据）
+enum RowAction {
+    AssignBase(&'static crate::stratagems::Stratagem),
+    AssignPlugin(PluginStratagem),
+    OpenContext {
+        name: String,
+        category: String,
+        icon_key: String,
+        command: Vec<String>,
+        description: String,
+        is_plugin: bool,
+        pos: Pos2,
+    },
+}
 
 pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) {
     let mut region = ui.new_child(egui::UiBuilder::new().max_rect(rect));
@@ -83,17 +98,20 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics)
             }
         }
 
-        let items: Vec<OwnedStratagem> = if app.library.lib_search.is_empty() {
-            app.lib_by_category_owned(&app.library.lib_category)
+        let items: Vec<StratagemRef> = if app.library.lib_search.is_empty() {
+            app.lib_by_category(&app.library.lib_category)
         } else {
-            app.lib_search_owned(&app.library.lib_search)
+            app.lib_search(&app.library.lib_search)
         };
+        let mut actions: Vec<RowAction> = Vec::new();
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list));
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(&mut list_ui, |ui| {
                 for s in &items {
-                    render_library_row(app, ui, &s.as_ref(), m);
+                    if let Some(action) = render_library_row(app, ui, s, m) {
+                        actions.push(action);
+                    }
                 }
                 if app.library.lib_search.is_empty() {
                     ui.label(
@@ -103,16 +121,53 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics)
                     );
                 }
             });
+        for action in actions {
+            match action {
+                RowAction::AssignBase(s) => app.assign_stratagem(s),
+                RowAction::AssignPlugin(p) => {
+                    let sref = StratagemRef::Plugin(&p);
+                    app.assign_stratagem_ref(&sref);
+                }
+                RowAction::OpenContext { name, category, icon_key, command, description, is_plugin, pos } => {
+                    app.library_context = Some(LibraryContext {
+                        name, category, icon_key, command, description, is_plugin, pos,
+                    });
+                }
+            }
+        }
     });
 }
 
-fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMetrics) {
+/// 用二分查找确定能放入 max_w 的最长前缀（逐字符探测的 O(n²) 版已被替换）
+fn truncate_to_fit(p: &egui::Painter, text: &str, font: egui::FontId, max_w: f32) -> String {
+    if p.layout_no_wrap(text.to_string(), font.clone(), TEXT).size().x <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;      // 可行前缀长度
+    let mut hi = chars.len(); // 不可行前缀长度
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        let candidate: String = chars[..mid].iter().collect();
+        let w = p.layout_no_wrap(format!("{candidate}…"), font.clone(), TEXT).size().x;
+        if w <= max_w { lo = mid; } else { hi = mid; }
+    }
+    if lo == 0 {
+        "…".to_string()
+    } else {
+        let prefix: String = chars[..lo].iter().collect();
+        format!("{prefix}…")
+    }
+}
+
+fn render_library_row(app: &H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMetrics) -> Option<RowAction> {
     let width = ui.available_rect_before_wrap().width();
     let (resp, p) = ui.allocate_painter(Vec2::new(width, m.lib_row_h()), Sense::click());
     let rect = resp.rect;
 
     let in_armed = app
-        .model.armed
+        .model
+        .armed
         .and_then(|a| app.slot_name(a))
         .map_or(false, |n| n == s.name());
 
@@ -142,26 +197,7 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMe
     };
     let max_w = width - 160.0;
     let font = m.fit_font(&p, &label, max_w, &[13.0, 11.0], false);
-    let display: std::borrow::Cow<'_, str> = {
-        let mut s = String::new();
-        let mut fits = true;
-        for ch in label.chars() {
-            let test = format!("{s}{ch}…");
-            if p.layout_no_wrap(test.clone(), font.clone(), TEXT).size().x <= max_w {
-                s.push(ch);
-            } else {
-                fits = false;
-                break;
-            }
-        }
-        if fits && !label.is_empty() {
-            std::borrow::Cow::Owned(label)
-        } else if s.is_empty() {
-            std::borrow::Cow::Borrowed("…")
-        } else {
-            std::borrow::Cow::Owned(format!("{s}…"))
-        }
-    };
+    let display = truncate_to_fit(&p, &label, font.clone(), max_w);
     p.text(
         Pos2::new(rect.left() + m.lib_row_text_x(), rect.center().y),
         Align2::LEFT_CENTER,
@@ -183,15 +219,19 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMe
         TEXT_DIM,
     );
 
+    let mut action = None;
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         resp.clone().on_hover_text(format!("{}\n{}", s.model(), s.description()));
     }
     if resp.clicked() {
-        app.assign_stratagem_ref(s);
+        action = Some(match s {
+            StratagemRef::Base(b) => RowAction::AssignBase(b),
+            StratagemRef::Plugin(p) => RowAction::AssignPlugin((*p).clone()),
+        });
     }
     if resp.secondary_clicked() {
-        app.library_context = Some(LibraryContext {
+        action = Some(RowAction::OpenContext {
             name: s.name().to_string(),
             category: s.category().to_string(),
             icon_key: s.icon().to_string(),
@@ -201,4 +241,5 @@ fn render_library_row(app: &mut H2ACApp, ui: &mut Ui, s: &StratagemRef, m: &UiMe
             pos: resp.rect.left_bottom(),
         });
     }
+    action
 }

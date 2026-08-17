@@ -61,6 +61,35 @@ pub fn load_all() -> Vec<PluginStratagem> {
     stratagems
 }
 
+/// 对 plugins/ 目录下所有 JSON 清单执行 transform（修改整个战备列表）；
+/// 返回 true 表示该文件被修改，仅变更过的文件会被回写。
+pub fn rewrite_stratagems(
+    transform: &mut dyn FnMut(&mut Vec<PluginStratagem>) -> bool,
+) -> std::io::Result<()> {
+    let dir = plugins_dir();
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(true, |e| e != "json") {
+            continue;
+        }
+        let data = match fs::read_to_string(&path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let mut manifest: PluginManifest = match serde_json::from_str(&data) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if transform(&mut manifest.stratagems) {
+            crate::util::save_json(&path, &manifest)?;
+        }
+    }
+    Ok(())
+}
+
 /// 创建示例插件 JSON 存到 plugins/example.json（供 UI 创建器首次使用时参考）
 pub fn create_example_plugin() {
     let dir = plugins_dir();

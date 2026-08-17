@@ -6,25 +6,12 @@ use crate::plugin;
 impl H2ACApp {
     pub fn delete_plugin_stratagem(&mut self, name: &str) {
         self.plugins.stratagems.retain(|p| p.name != name);
-        let dir = plugin::plugins_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(true, |e| e != "json") { continue; }
-                if let Ok(data) = std::fs::read_to_string(&path) {
-                    if data.contains(&format!("\"name\": \"{}\"", name)) {
-                        if let Ok(mut m) = serde_json::from_str::<crate::stratagems::PluginManifest>(&data) {
-                            let before = m.stratagems.len();
-                            m.stratagems.retain(|s| s.name != name);
-                            if m.stratagems.len() < before {
-                                let _ = std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap_or_default());
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let name = name.to_string();
+        let _ = plugin::rewrite_stratagems(&mut |strats| {
+            let before = strats.len();
+            strats.retain(|s| s.name != name);
+            strats.len() != before
+        });
         self.log(LogKind::Warn, format!("已删除: {name}"));
     }
 

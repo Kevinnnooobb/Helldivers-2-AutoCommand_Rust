@@ -338,42 +338,6 @@ pub enum StratagemRef<'a> {
     Plugin(&'a PluginStratagem),
 }
 
-/// 自有版本（可脱离 borrow 使用）
-pub enum OwnedStratagem {
-    Base(&'static Stratagem),
-    Plugin(PluginStratagem),
-}
-
-impl OwnedStratagem {
-    pub fn name(&self) -> &str {
-        match self { OwnedStratagem::Base(s) => s.name, OwnedStratagem::Plugin(s) => &s.name }
-    }
-    pub fn category(&self) -> &str {
-        match self { OwnedStratagem::Base(s) => s.category, OwnedStratagem::Plugin(s) => &s.category }
-    }
-    pub fn model(&self) -> &str {
-        match self { OwnedStratagem::Base(s) => s.model, OwnedStratagem::Plugin(s) => &s.model }
-    }
-    pub fn command(&self) -> Vec<&str> {
-        match self {
-            OwnedStratagem::Base(s) => s.command.to_vec(),
-            OwnedStratagem::Plugin(s) => s.command.iter().map(|c| dir_to_arrow(c.as_str())).collect(),
-        }
-    }
-    pub fn description(&self) -> &str {
-        match self { OwnedStratagem::Base(s) => s.description, OwnedStratagem::Plugin(s) => &s.description }
-    }
-    pub fn icon(&self) -> &str {
-        match self { OwnedStratagem::Base(s) => s.icon, OwnedStratagem::Plugin(s) => &s.icon }
-    }
-    pub fn as_ref(&self) -> StratagemRef<'_> {
-        match self {
-            OwnedStratagem::Base(s) => StratagemRef::Base(s),
-            OwnedStratagem::Plugin(s) => StratagemRef::Plugin(s),
-        }
-    }
-}
-
 impl StratagemRef<'_> {
     pub fn name(&self) -> &str {
         match self {

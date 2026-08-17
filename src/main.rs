@@ -20,7 +20,7 @@ mod wiki_fetcher;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use config::{list_profiles, load_config, save_config, SLOT_COUNT};
 use eframe::egui::{self, Context, Pos2};
@@ -50,6 +50,15 @@ fn now_hms() -> String {
     let st = unsafe { GetLocalTime() };
     format!("{:02}:{:02}:{:02}", st.wHour, st.wMinute, st.wSecond)
 }
+
+/// 内置战备指令签名（英文方向 join），Wiki 差集比对用 O(1) 成员判定
+static BUILTIN_SIGNATURES: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
+    STRATAGEMS.iter().map(|bs| {
+        bs.command.iter().map(|d| {
+            match *d { "↑" => "up", "↓" => "down", "←" => "left", "→" => "right", _ => *d }
+        }).collect::<Vec<_>>().join(",")
+    }).collect()
+});
 
 // ─── 应用状态 ───
 
@@ -298,23 +307,17 @@ impl eframe::App for H2ACApp {
                     still_active = false;
                     if let Some(Ok(new_items)) = progress.result {
                         // 差集比对：只保留指令序列不在内置数据库中出现的
-                        let mut truly_new: Vec<crate::stratagems::PluginStratagem> = Vec::new();
-                        for item in &new_items {
-                            let cmd_str = item.command.join(",");
-                            let exists = STRATAGEMS.iter().any(|bs| {
-                                let bs_cmd: String = bs.command.iter().map(|d| {
-                                    match *d { "↑" => "up", "↓" => "down", "←" => "left", "→" => "right", _ => *d }
-                                }).collect::<Vec<_>>().join(",");
-                                bs_cmd == cmd_str
-                            });
-                            if !exists { truly_new.push(item.clone()); }
-                        }
+                        // （内置签名预计算为 HashSet，O(1) 成员判定，替代每项 O(n) 扫描重建）
+                        let truly_new: Vec<crate::stratagems::PluginStratagem> = new_items.iter()
+                            .filter(|item| !BUILTIN_SIGNATURES.contains(&item.command.join(",")))
+                            .cloned()
+                            .collect();
                         let new_count = truly_new.len();
                         // 统一分类为 "NEW (Wiki)"
+                        let mut truly_new = truly_new;
                         for item in &mut truly_new { item.category = "NEW (Wiki)".into(); }
                         // 注入运行时（此时分类已统一）
                         self.plugins.stratagems.retain(|p| !p.name.ends_with("(Wiki)"));
-                        self.plugins.stratagems.extend(truly_new.clone());
                         // 写入 _wiki_new.json；全部命中内置时删除陈旧文件，避免重启后加载过期数据
                         if new_count > 0 {
                             let manifest = crate::stratagems::PluginManifest {
@@ -324,6 +327,7 @@ impl eframe::App for H2ACApp {
                                 stratagems: truly_new,
                             };
                             let _ = util::save_json(&plugin::wiki_plugin_path(), &manifest);
+                            self.plugins.stratagems.extend(manifest.stratagems);
                         } else {
                             let _ = std::fs::remove_file(plugin::wiki_plugin_path());
                         }
