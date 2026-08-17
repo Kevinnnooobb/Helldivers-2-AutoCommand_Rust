@@ -115,7 +115,7 @@ impl H2ACApp {
         let icons = IconStore::load(ctx);
 
         plugin::create_example_plugin();
-        let (plugin_stratagems, plugin_themes) = plugin::load_all();
+        let plugin_stratagems = plugin::load_all();
 
         let mut logs = VecDeque::new();
         logs.push_back(LogEntry {
@@ -152,7 +152,7 @@ impl H2ACApp {
             model,
             library,
             capture: CaptureState::default(),
-            plugins: PluginData { stratagems: plugin_stratagems, themes: plugin_themes },
+            plugins: PluginData { stratagems: plugin_stratagems },
             wiki: WikiState { fetch_rx: None, fetch_status: String::new(), cache_exists: false },
             creator: CreatorState::default(),
             logs,
@@ -315,7 +315,6 @@ impl eframe::App for H2ACApp {
                                 name: "Wiki 新增战备".into(),
                                 enabled: true,
                                 stratagems: truly_new,
-                                themes: Vec::new(),
                             };
                             if let Ok(json) = serde_json::to_string_pretty(&manifest) {
                                 let dir = plugin::plugins_dir();

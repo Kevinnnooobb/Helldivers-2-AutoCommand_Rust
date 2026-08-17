@@ -402,15 +402,6 @@ impl StratagemRef<'_> {
     }
 }
 
-/// 插件主题颜色
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginTheme {
-    pub name: String,
-    pub background_color: String,
-    pub border_color: String,
-    pub accent_color: String,
-}
-
 /// 插件清单（对应 plugins/*.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
@@ -421,8 +412,6 @@ pub struct PluginManifest {
     pub enabled: bool,
     #[serde(default)]
     pub stratagems: Vec<PluginStratagem>,
-    #[serde(default)]
-    pub themes: Vec<PluginTheme>,
 }
 
 fn default_true() -> bool { true }

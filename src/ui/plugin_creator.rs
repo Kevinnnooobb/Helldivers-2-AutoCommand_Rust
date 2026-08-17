@@ -71,18 +71,12 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                         egui::RichText::new("🛠 创建战备").font(m.hud(13.0)),
                     );
                     if tab_create.clicked() { app.creator.tab = CreatorTab::Create; }
-                    let tab_themes = ui.selectable_label(
-                        app.creator.tab == CreatorTab::Themes,
-                        egui::RichText::new("🎨 创建主题").font(m.hud(13.0)),
-                    );
-                    if tab_themes.clicked() { app.creator.tab = CreatorTab::Themes; }
                 });
                 ui.add_space(8.0);
 
                 match app.creator.tab {
                     CreatorTab::Fetch => render_fetch_tab(app, ui, m),
                     CreatorTab::Create => render_create_tab(app, ui, m),
-                    CreatorTab::Themes => render_themes_tab(app, ui, m),
                 }
 
                 ui.add_space(4.0);
@@ -217,38 +211,6 @@ pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
     });
 }
 
-pub fn render_themes_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
-    ui.label(egui::RichText::new("创建主题插件").font(m.hud_b(14.0)).color(GOLD));
-    ui.add_space(6.0);
-
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("主题名:").font(m.hud(13.0)));
-        ui.add(egui::TextEdit::singleline(&mut app.creator.theme_name)
-            .font(m.hud(13.0)).desired_width(160.0));
-    });
-    ui.add_space(8.0);
-
-    let mut colors = [
-        ("背景色", &mut app.creator.bg_color),
-        ("边框色", &mut app.creator.border_color),
-        ("强调色", &mut app.creator.accent_color),
-    ];
-    for (label, color) in &mut colors {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(*label).font(m.hud(13.0)));
-            ui.color_edit_button_rgb(color);
-        });
-    }
-
-    ui.add_space(10.0);
-    if hud_button(ui, "保存主题", Vec2::new(130.0, 32.0), m, GOLD, false).clicked() {
-        save_theme_from_creator(app);
-    }
-    if !app.creator.status.is_empty() {
-        ui.label(egui::RichText::new(&app.creator.status).font(m.hud(11.0)));
-    }
-}
-
 pub fn save_plugin_from_creator(app: &mut H2ACApp) {
     let name = app.creator.plugin_name.trim();
     if name.is_empty() {
@@ -276,7 +238,6 @@ pub fn save_plugin_from_creator(app: &mut H2ACApp) {
         name: name.to_string(),
         enabled: true,
         stratagems,
-        themes: Vec::new(),
     };
 
     let dir = plugin::plugins_dir();
@@ -295,49 +256,8 @@ pub fn save_plugin_from_creator(app: &mut H2ACApp) {
     }
 }
 
-pub fn save_theme_from_creator(app: &mut H2ACApp) {
-    let name = app.creator.theme_name.trim();
-    if name.is_empty() {
-        app.creator.status = "请输入主题名".into();
-        return;
-    }
-    let theme = crate::stratagems::PluginTheme {
-        name: name.to_string(),
-        background_color: format!("#{:02X}{:02X}{:02X}",
-            (app.creator.bg_color[0] * 255.0) as u8,
-            (app.creator.bg_color[1] * 255.0) as u8,
-            (app.creator.bg_color[2] * 255.0) as u8),
-        border_color: format!("#{:02X}{:02X}{:02X}",
-            (app.creator.border_color[0] * 255.0) as u8,
-            (app.creator.border_color[1] * 255.0) as u8,
-            (app.creator.border_color[2] * 255.0) as u8),
-        accent_color: format!("#{:02X}{:02X}{:02X}",
-            (app.creator.accent_color[0] * 255.0) as u8,
-            (app.creator.accent_color[1] * 255.0) as u8,
-            (app.creator.accent_color[2] * 255.0) as u8),
-    };
-    let manifest = crate::stratagems::PluginManifest {
-        id: name.to_lowercase().replace(' ', "_"),
-        name: name.to_string(),
-        enabled: true,
-        stratagems: Vec::new(),
-        themes: vec![theme],
-    };
-    let dir = plugin::plugins_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("{}.json", manifest.id));
-    match serde_json::to_string_pretty(&manifest) {
-        Ok(json) => {
-            let _ = std::fs::write(&path, json);
-            app.creator.status = format!("主题已保存: plugins/{}.json", manifest.id);
-        }
-        Err(e) => { app.creator.status = format!("序列化失败: {e}"); }
-    }
-}
-
 pub fn reload_plugins(app: &mut H2ACApp) {
-    let (stratagems, themes) = plugin::load_all();
+    let stratagems = plugin::load_all();
     app.plugins.stratagems.retain(|p| !p.name.starts_with("(Plugin)"));
     app.plugins.stratagems.extend(stratagems);
-    app.plugins.themes = themes;
 }

@@ -5,7 +5,6 @@ use std::sync::mpsc;
 use crate::config::Config;
 use crate::icons::IconStore;
 use crate::stratagems::PluginStratagem;
-use crate::stratagems::PluginTheme;
 use crate::theme::UiMetrics;
 use crate::wiki_fetcher;
 
@@ -50,7 +49,6 @@ pub struct CaptureState {
 /// 插件加载的数据
 pub struct PluginData {
     pub stratagems: Vec<PluginStratagem>,
-    pub themes: Vec<PluginTheme>,
 }
 
 /// Wiki 拉取进度
@@ -70,10 +68,6 @@ pub struct CreatorState {
     pub stratagem_sequence: Vec<String>,
     pub sequence_recording: bool,
     pub icon_key: String,
-    pub theme_name: String,
-    pub bg_color: [f32; 3],
-    pub border_color: [f32; 3],
-    pub accent_color: [f32; 3],
     pub saved_entries: Vec<(String, Vec<String>, String)>,
     pub status: String,
 }
@@ -82,7 +76,6 @@ pub struct CreatorState {
 pub enum CreatorTab {
     Fetch,
     Create,
-    Themes,
 }
 
 impl Default for CreatorState {
@@ -96,10 +89,6 @@ impl Default for CreatorState {
             stratagem_sequence: Vec::new(),
             sequence_recording: false,
             icon_key: "reinforce".into(),
-            theme_name: String::new(),
-            bg_color: [0.1, 0.08, 0.06],
-            border_color: [0.29, 0.75, 0.54],
-            accent_color: [0.29, 0.75, 0.54],
             saved_entries: Vec::new(),
             status: String::new(),
         }

@@ -1,5 +1,5 @@
 // 插件管理器 — 从 plugins/ 目录加载 JSON 插件并合并到运行时
-use crate::stratagems::{PluginManifest, PluginStratagem, PluginTheme};
+use crate::stratagems::{PluginManifest, PluginStratagem};
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,19 +12,18 @@ pub fn plugins_dir() -> PathBuf {
 }
 
 /// 扫描 plugins/ 目录，加载所有启用的插件
-pub fn load_all() -> (Vec<PluginStratagem>, Vec<PluginTheme>) {
+pub fn load_all() -> Vec<PluginStratagem> {
     let dir = plugins_dir();
     if !dir.exists() {
         let _ = fs::create_dir_all(&dir);
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     }
 
     let mut stratagems = Vec::new();
-    let mut themes = Vec::new();
 
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
-        Err(_) => return (stratagems, themes),
+        Err(_) => return stratagems,
     };
 
     for entry in entries.flatten() {
@@ -50,12 +49,9 @@ pub fn load_all() -> (Vec<PluginStratagem>, Vec<PluginTheme>) {
         for s in manifest.stratagems {
             stratagems.push(s);
         }
-        for t in manifest.themes {
-            themes.push(t);
-        }
     }
 
-    (stratagems, themes)
+    stratagems
 }
 
 /// 创建示例插件 JSON 存到 plugins/example.json（供 UI 创建器首次使用时参考）
@@ -78,12 +74,6 @@ pub fn create_example_plugin() {
             command: vec!["up".into(), "down".into(), "left".into(), "right".into()],
             description: "这是一个通过插件加载的示例战备".into(),
             icon: "reinforce".into(),
-        }],
-        themes: vec![PluginTheme {
-            name: "示例主题".into(),
-            background_color: "#0a0f0a".into(),
-            border_color: "#3ddc84".into(),
-            accent_color: "#66ffaa".into(),
         }],
     };
 
