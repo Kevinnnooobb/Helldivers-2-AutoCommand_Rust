@@ -1364,7 +1364,6 @@ name = "h2ac-rs"
 version = "1.0.0"
 dependencies = [
  "eframe",
- "egui",
  "image",
  "serde",
  "serde_json",

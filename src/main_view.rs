@@ -1,4 +1,4 @@
-use eframe::egui::{Context, CursorIcon, Key, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Context, CursorIcon, Key, Pos2, Rect, Sense, Vec2};
 use crate::theme::*;
 use crate::widgets::*;
 use crate::H2ACApp;

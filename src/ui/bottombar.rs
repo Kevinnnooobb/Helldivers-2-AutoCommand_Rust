@@ -72,6 +72,7 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetric
         );
 
         let mut sel = app.model.current_profile.clone();
+        let names = &app.model.profile_names;
         egui::ComboBox::from_id_salt("profile_combo")
             .width(120.0)
             .selected_text(
@@ -79,7 +80,7 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetric
                     .font(m.hud(12.0)),
             )
             .show_ui(ui, |ui| {
-                for n in &app.model.profile_names.clone() {
+                for n in names {
                     ui.selectable_value(&mut sel, n.clone(), n.as_str());
                 }
             });
