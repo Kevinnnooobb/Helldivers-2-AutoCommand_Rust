@@ -26,12 +26,12 @@
 - **双模式**
   - **主界面** (1100×640) — 完整战术终端：自定义标题栏、2×5 槽位网格、详情面板、战备库、日志栏
   - **紧凑模式** (554×56) — 无边框悬浮迷你条，始终置顶，点击图标即执行
-- **Wiki 数据拉取** — 一键从 Stratagem Hero Trainer 拉取最新战备数据，自动差集比对，仅新增写入 `plugins/_wiki_new.json`
+- **Wiki 数据拉取** — 一键从 Stratagem Hero Trainer 拉取最新战备数据，自动差集比对，仅新增写入 `plugins/_wiki_new.json`；启动时自动检测缓存，支持一键清除
 - **插件系统** — JSON 文件放入 `plugins/` 即可扩展战备，启动时自动加载
 - **内置 UI 创建器** — 免手写 JSON：序列录制器（方向键/WASD 捕获）+ 战备录入
 - **按键设置** — 方向键映射（WASD / ESDF / 箭头）、激活键（支持 `lctrl`/`rctrl`/`lalt`/`ralt` 手动输入）、按键延迟 + 预延迟可调
 - **执行闪光** — 全局热键或双击触发时金色闪光（0.7s 衰减）
-- **监听开关** — 状态灯一键启停全局热键，呼吸脉冲动画
+- **监听开关** — 状态灯一键启停全局热键，呼吸脉冲动画；热键与 Profile 修改即时生效，无需重启应用
 - **运行时图标加载** — exe 旁 `assets/icons/` 下新增 PNG 自动发现，无需重编译
 
 ---
@@ -51,8 +51,8 @@
 **前置需求：** [Rust](https://www.rust-lang.org/tools/install) 1.75+ · Windows 10/11 64-bit
 
 ```bash
-git clone https://github.com/your-username/h2ac-rs.git
-cd h2ac-rs
+git clone https://github.com/Kevinnnooobb/Helldivers-2-AutoCommand_Rust.git
+cd Helldivers-2-AutoCommand_Rust
 cargo build --release
 ```
 
@@ -97,7 +97,7 @@ cargo build --release
 
 底部栏：输入名称 → 💾保存 / ▶加载 / 🗑删除
 
-Profile 含槽位分配 + 插件战备 + 热键绑定，存储在 `profiles/` 目录。
+Profile 含槽位分配 + 插件战备 + 热键绑定，存储在 `profiles/` 目录。加载后槽位配置同步持久化到 `config.json`，重启保持。
 
 ---
 
@@ -145,6 +145,8 @@ Profile 含槽位分配 + 插件战备 + 热键绑定，存储在 `profiles/` �
 }
 ```
 
+缺字段自动使用默认值；`loadout` 中的非法索引在加载时自动视为空槽。序列化失败时不会覆盖现有文件。
+
 ---
 
 ## 项目结构
@@ -159,19 +161,21 @@ h2ac-rs/
 │   ├── icons/                       # 106 PNG（内置嵌入 + 运行时发现）
 │   └── icon-removebg.png            # 应用图标
 ├── src/
-│   ├── main.rs                      # 入口 / 窗口装配
+│   ├── main.rs                      # 入口 / 主循环 / 热键与 Wiki 装配
 │   ├── main_view.rs                 # 主界面组装（薄层，调度 ui/）
 │   ├── compact_view.rs              # 紧凑模式
 │   ├── state.rs                     # AppModel / LibraryState / CaptureState / ...
 │   ├── config.rs                    # Config / Profile JSON
 │   ├── executor.rs                  # SendInput（execute_command 核心）
-│   ├── hotkey.rs                    # WH_KEYBOARD_LL 全局钩子
-│   ├── plugin.rs                    # 插件扫描 & 加载
-│   ├── wiki_fetcher.rs              # Wiki JS 解析 & 差集比对
+│   ├── hotkey.rs                    # WH_KEYBOARD_LL 全局钩子（显式生命周期 + 热更新）
+│   ├── plugin.rs                    # 插件扫描 / 加载 / 统一改写
+│   ├── wiki_fetcher.rs              # Wiki JS 解析与异步拉取
 │   ├── icons.rs                     # IconStore（嵌入 + 磁盘兜底）
 │   ├── theme.rs                     # 设计系统
 │   ├── widgets.rs                   # HUD 组件库
 │   ├── stratagems.rs                # 战备数据库 + PluginStratagem 类型
+│   ├── util.rs                      # 基础设施：app_dir / save_json / 后台日志
+│   ├── fixtures/                    # 单元测试数据（wiki_sample.js）
 │   ├── model/                       # H2ACApp 方法分拆
 │   │   ├── slots.rs / library.rs / category.rs / plugins.rs / wiki.rs
 │   └── ui/                          # 视图面板
@@ -183,6 +187,18 @@ h2ac-rs/
 ├── profiles/                        # Profile 存储
 └── screenshots/
 ```
+
+---
+
+## 开发
+
+```bash
+cargo test                                      # 24 个单元测试（解析器 / 配置 / 方向映射 / 槽位状态机等）
+cargo clippy --all-targets -- -W clippy::all    # 静态检查（当前 0 警告）
+cargo build --release                           # 产物 target/release/h2ac-rs.exe
+```
+
+测试覆盖：Wiki JS 解析器（fixture 进仓库，不依赖外部文件）、方向转换契约、Config/Profile 序列化与值域校验、扫描码映射与别名、热键键名、指令文本解析、槽位推进状态机。
 
 ---
 
@@ -209,7 +225,8 @@ h2ac-rs/
 
 **Q: 如何更新数据？**
 - 点击战备库头部🔍按钮 → 自动从 Wiki 拉取并差集比对
-- 新战备写入 `plugins/_wiki_new.json`，下次启动自动加载
+- 新增战备写入 `plugins/_wiki_new.json`，下次启动自动加载；本次拉取全部命中内置时自动删除旧缓存
+- 创建器 📡 页签可查看拉取进度，并在「已缓存」时一键清除缓存
 
 ## 致谢
 
