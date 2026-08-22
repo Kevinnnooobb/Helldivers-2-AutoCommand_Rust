@@ -297,14 +297,27 @@ pub fn command_to_string(cmd: &[&str]) -> String {
     cmd.join("")
 }
 
-/// 英文字符串方向 → 箭头符号（显示层，未知方向显示为 ?）
+/// 方向 → 箭头符号（显示层）：兼容英文词与箭头两种输入，
+/// 未知方向显示为 ?（修复：手动创建的插件曾以箭头格式存储，全部显示为 ?）
 pub fn dir_to_arrow(dir: &str) -> &'static str {
     match dir {
-        "up" => "↑",
-        "down" => "↓",
-        "left" => "←",
-        "right" => "→",
+        "up" | "↑" => "↑",
+        "down" | "↓" => "↓",
+        "left" | "←" => "←",
+        "right" | "→" => "→",
         _ => "?",
+    }
+}
+
+/// 箭头 → 英文方向词（插件清单的规范格式）；英文/未知值原样返回。
+/// 手动录制器产出箭头，保存插件时经此规范化，与 Wiki/示例插件格式一致。
+pub fn arrow_to_dir(dir: &str) -> &str {
+    match dir {
+        "↑" => "up",
+        "↓" => "down",
+        "←" => "left",
+        "→" => "right",
+        _ => dir,
     }
 }
 
@@ -400,11 +413,29 @@ mod tests {
 
     #[test]
     fn direction_mapping() {
+        // 英文词 → 箭头
         assert_eq!(dir_to_arrow("up"), "↑");
         assert_eq!(dir_to_arrow("down"), "↓");
         assert_eq!(dir_to_arrow("left"), "←");
         assert_eq!(dir_to_arrow("right"), "→");
         assert_eq!(dir_to_arrow("??"), "?");
+        // 箭头输入（手动创建插件的旧格式）必须原样显示，不能再显示 ?
+        assert_eq!(dir_to_arrow("↑"), "↑");
+        assert_eq!(dir_to_arrow("↓"), "↓");
+        assert_eq!(dir_to_arrow("←"), "←");
+        assert_eq!(dir_to_arrow("→"), "→");
+        // 箭头 → 规范英文（插件清单格式）
+        assert_eq!(arrow_to_dir("↑"), "up");
+        assert_eq!(arrow_to_dir("↓"), "down");
+        assert_eq!(arrow_to_dir("←"), "left");
+        assert_eq!(arrow_to_dir("→"), "right");
+        assert_eq!(arrow_to_dir("up"), "up");
+        assert_eq!(arrow_to_dir("w"), "w");
+        // 往返一致：规范化的英文词显示回箭头
+        for (a, e) in [("↑", "up"), ("↓", "down"), ("←", "left"), ("→", "right")] {
+            assert_eq!(arrow_to_dir(a), e);
+            assert_eq!(dir_to_arrow(arrow_to_dir(a)), a);
+        }
         assert_eq!(dir_to_arrow_or_raw("up"), "↑");
         assert_eq!(dir_to_arrow_or_raw("w"), "w");
     }

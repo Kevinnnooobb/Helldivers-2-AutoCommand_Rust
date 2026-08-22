@@ -226,7 +226,8 @@ pub fn save_plugin_from_creator(app: &mut H2ACApp) {
             name: n.clone(),
             category: app.creator.department.clone(),
             model: String::new(),
-            command: seq.clone(),
+            // 录制器产出箭头，规范化为插件清单的英文方向格式
+            command: seq.iter().map(|d| crate::stratagems::arrow_to_dir(d).to_string()).collect(),
             description: String::new(),
             icon: icon.clone(),
         }

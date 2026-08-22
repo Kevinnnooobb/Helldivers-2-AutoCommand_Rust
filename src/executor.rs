@@ -230,4 +230,16 @@ mod tests {
             assert!(lookup_scancode(key).is_ok(), "missing scancode for {key}");
         }
     }
+
+    #[test]
+    fn manual_arrow_commands_map_to_same_keys_as_english() {
+        // 手动创建的插件（箭头格式）与 Wiki 插件（英文格式）必须注入完全相同的按键
+        let cfg = Config::default();
+        for (arrow, english) in [("↑", "up"), ("↓", "down"), ("←", "left"), ("→", "right")] {
+            assert_eq!(dir_to_arrow_or_raw(arrow), dir_to_arrow_or_raw(english));
+            let key_arrow = cfg.key_bindings.get(dir_to_arrow_or_raw(arrow)).map(String::as_str).unwrap_or(arrow);
+            let key_english = cfg.key_bindings.get(dir_to_arrow_or_raw(english)).map(String::as_str).unwrap_or(english);
+            assert_eq!(key_arrow, key_english);
+        }
+    }
 }
