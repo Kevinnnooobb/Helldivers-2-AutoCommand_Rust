@@ -18,6 +18,22 @@ fn next_free_slot(
         .find(|&i| slots[i].is_none() && !plugin_slots.contains_key(&i))
 }
 
+/// 写入内置战备到槽位：同时清除同槽插件条目（单点保证「一槽一内容」不变量）。
+/// 修复：此前用内置战备替换插件/NEW 战备时 plugin_slots 残留，导致槽位继续
+/// 显示和执行旧插件战备（所有读取路径均优先查 plugin_slots）。
+fn write_base_slot(
+    slots: &mut [Option<usize>],
+    plugin_slots: &mut HashMap<usize, PluginStratagem>,
+    loadout: &mut [Option<usize>],
+    slot: usize,
+    idx: usize,
+) {
+    if slot >= SLOT_COUNT { return; }
+    slots[slot] = Some(idx);
+    plugin_slots.remove(&slot);
+    loadout[slot] = Some(idx);
+}
+
 impl H2ACApp {
     /// 装填后：武装态推进到下一个空槽（无空槽则以当前槽为详情槽）
     fn advance_armed(&mut self, slot: usize) {
@@ -84,9 +100,13 @@ impl H2ACApp {
     }
 
     pub fn set_slot(&mut self, slot: usize, idx: usize) {
-        if slot >= SLOT_COUNT { return; }
-        self.model.slots[slot] = Some(idx);
-        self.model.config.loadout[slot] = Some(idx);
+        write_base_slot(
+            &mut self.model.slots,
+            &mut self.model.plugin_slots,
+            &mut self.model.config.loadout,
+            slot,
+            idx,
+        );
         save_config(&self.model.config);
     }
 
@@ -186,5 +206,34 @@ mod tests {
         assert_eq!(next_free_slot(&slots, &HashMap::new(), 9), Some(0));
         for s in slots.iter_mut() { *s = Some(1); }
         assert_eq!(next_free_slot(&slots, &HashMap::new(), 0), None);
+    }
+
+    #[test]
+    fn write_base_slot_clears_stale_plugin_entry() {
+        // 复现「NEW 战备无法被替换」：插件条目残留的槽位写入内置战备
+        let mut slots = vec![None; SLOT_COUNT];
+        let mut plugin_slots = HashMap::new();
+        let mut loadout = vec![None; SLOT_COUNT];
+        slots[3] = Some(crate::stratagems::PLUGIN_SLOT_MARK);
+        loadout[3] = Some(crate::stratagems::PLUGIN_SLOT_MARK);
+        plugin_slots.insert(3, plugin("stale"));
+
+        write_base_slot(&mut slots, &mut plugin_slots, &mut loadout, 3, 7);
+
+        assert_eq!(slots[3], Some(7));
+        assert_eq!(loadout[3], Some(7));
+        assert!(!plugin_slots.contains_key(&3), "同槽插件条目必须被清除");
+    }
+
+    #[test]
+    fn write_base_slot_ignores_out_of_range() {
+        let mut slots = vec![None; SLOT_COUNT];
+        let mut plugin_slots = HashMap::new();
+        let mut loadout = vec![None; SLOT_COUNT];
+        write_base_slot(&mut slots, &mut plugin_slots, &mut loadout, SLOT_COUNT, 0);
+        write_base_slot(&mut slots, &mut plugin_slots, &mut loadout, 99, 0);
+        assert!(slots.iter().all(|s| s.is_none()));
+        assert!(loadout.iter().all(|s| s.is_none()));
+        assert!(plugin_slots.is_empty());
     }
 }
