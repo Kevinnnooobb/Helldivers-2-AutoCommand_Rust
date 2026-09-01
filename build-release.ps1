@@ -65,8 +65,15 @@ if ($iscc) {
 # ─── Push source to GitHub ───
 if (-not $SkipPush) {
     Write-Host "[5/6] git push origin main"
+    $env:GIT_SSL_BACKEND = "openssl"
     git push origin HEAD
-    if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+    if ($LASTEXITCODE -ne 0) {
+        $token = gh auth token 2>$null
+        if (-not $token) { throw "git push failed and no gh auth token available" }
+        Write-Host "    fallback: push with gh auth token"
+        git -c credential.helper= -c http.sslBackend=openssl push "https://x-access-token:$token@github.com/$Repo.git" HEAD:main
+        if ($LASTEXITCODE -ne 0) { throw "git push fallback failed" }
+    }
 } else {
     Write-Host "[5/6] skip git push (-SkipPush)"
 }
