@@ -191,7 +191,7 @@ impl UiMetrics {
 
     // 弹窗默认宽度
     pub fn modal_settings_w(&self) -> f32 { 360.0 * self.scale }
-    pub fn modal_settings_h(&self) -> f32 { 330.0 * self.scale }
+    pub fn modal_settings_h(&self) -> f32 { 390.0 * self.scale }
     pub fn modal_stratagem_w(&self) -> f32 { 420.0 * self.scale }
     pub fn modal_stratagem_h(&self) -> f32 { 400.0 * self.scale }
     pub fn modal_keycap_w(&self) -> f32 { 300.0 * self.scale }

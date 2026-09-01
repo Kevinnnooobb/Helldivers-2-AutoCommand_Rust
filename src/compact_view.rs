@@ -75,6 +75,8 @@ impl H2ACApp {
                     }
                 }
             });
+
+        crate::ui::modals::render_capture_modal(self, ctx, &m);
     }
 
     fn render_compact_tile(&mut self, ui: &mut Ui, idx: usize, m: &UiMetrics) {
@@ -162,7 +164,13 @@ impl H2ACApp {
             paint_chamfer(&p, resp.rect.shrink(1.0), 4.0, BG_HOVER, Stroke::NONE);
         }
         status_lamp(&p, resp.rect.center(), 4.5, self.model.listening, t);
-        resp.clone().on_hover_text(if self.model.listening { "监听中 — 点击静音" } else { "已静音 — 点击开启" });
+        resp.clone().on_hover_text(if self.model.listening { "监听中 — 点击静音 · 右键绑定快捷键" } else { "已静音 — 点击开启 · 右键绑定快捷键" });
+        if resp.secondary_clicked() {
+            self.capture.capturing = None;
+            self.capture.settings_capture = None;
+            self.capture.capturing_listen = true;
+            self.capture.captured.clear();
+        }
         if resp.clicked() {
             self.toggle_listening();
         }

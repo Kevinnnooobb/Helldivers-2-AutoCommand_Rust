@@ -77,6 +77,18 @@ pub fn render_topbar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, ctx: &Context, 
                 m.hud(13.0),
                 if app.model.listening { OK } else { DANGER },
             );
+            let hk = app.model.config.listen_hotkey.clone();
+            resp.clone().on_hover_text(if hk.is_empty() {
+                "点击开关监听 · 右键绑定全局快捷键".to_string()
+            } else {
+                format!("点击开关监听 · 按 {} 快速开关 · 右键改绑", hk.to_uppercase())
+            });
+            if resp.secondary_clicked() {
+                app.capture.capturing = None;
+                app.capture.settings_capture = None;
+                app.capture.capturing_listen = true;
+                app.capture.captured.clear();
+            }
             if resp.clicked() {
                 app.toggle_listening();
             }

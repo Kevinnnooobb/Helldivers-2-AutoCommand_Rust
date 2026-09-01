@@ -244,6 +244,19 @@ pub fn egui_key_to_name(key: &Key) -> Option<&'static str> {
         Key::Insert => Some("insert"), Key::Delete => Some("delete"),
         Key::Home => Some("home"), Key::End => Some("end"),
         Key::PageUp => Some("pageup"), Key::PageDown => Some("pagedown"),
+        // 标点：存基础字符（未按 Shift 的物理键），与 hotkey::vk_to_name 一致
+        Key::Comma => Some(","), Key::Period => Some("."), Key::Slash => Some("/"),
+        Key::Semicolon => Some(";"), Key::Colon => Some(";"),
+        Key::Minus => Some("-"), Key::Plus => Some("+"), Key::Equals => Some("="),
+        Key::OpenBracket => Some("["), Key::CloseBracket => Some("]"),
+        Key::OpenCurlyBracket => Some("["), Key::CloseCurlyBracket => Some("]"),
+        Key::Backslash => Some("\\"), Key::Pipe => Some("\\"),
+        Key::Backtick => Some("`"), Key::Quote => Some("'"),
+        Key::Questionmark => Some("/"), Key::Exclamationmark => Some("1"),
+        Key::F13 => Some("f13"), Key::F14 => Some("f14"), Key::F15 => Some("f15"),
+        Key::F16 => Some("f16"), Key::F17 => Some("f17"), Key::F18 => Some("f18"),
+        Key::F19 => Some("f19"), Key::F20 => Some("f20"), Key::F21 => Some("f21"),
+        Key::F22 => Some("f22"), Key::F23 => Some("f23"), Key::F24 => Some("f24"),
         _ => None,
     }
 }
@@ -255,9 +268,9 @@ pub fn key_capture_modal(
     let mut just_captured = false;
     ctx.input(|i| {
         for ev in &i.events {
-            if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+            if let egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } = ev {
                 if modifiers.ctrl || modifiers.alt || modifiers.mac_cmd { continue; }
-                if let Some(name) = egui_key_to_name(key) {
+                if let Some(name) = egui_key_to_name(&physical_key.unwrap_or(*key)) {
                     *captured_value = name.to_string();
                     just_captured = true;
                 }
@@ -271,9 +284,9 @@ pub fn key_capture_modal(
     let prev_ctrl = ctx.data_mut(|d| { let v = d.get_temp::<bool>(id_ctrl).unwrap_or(false); d.insert_temp(id_ctrl, mods.ctrl); v });
     let prev_alt = ctx.data_mut(|d| { let v = d.get_temp::<bool>(id_alt).unwrap_or(false); d.insert_temp(id_alt, mods.alt); v });
     let prev_shift = ctx.data_mut(|d| { let v = d.get_temp::<bool>(id_shift).unwrap_or(false); d.insert_temp(id_shift, mods.shift); v });
-    if mods.ctrl && !prev_ctrl { *captured_value = "ctrl".to_string(); just_captured = true; }
-    if mods.alt && !prev_alt { *captured_value = "alt".to_string(); just_captured = true; }
-    if mods.shift && !prev_shift { *captured_value = "shift".to_string(); just_captured = true; }
+    if mods.ctrl && !prev_ctrl && !just_captured { *captured_value = "ctrl".to_string(); just_captured = true; }
+    if mods.alt && !prev_alt && !just_captured { *captured_value = "alt".to_string(); just_captured = true; }
+    if mods.shift && !prev_shift && !just_captured { *captured_value = "shift".to_string(); just_captured = true; }
 
     egui::Area::new(egui::Id::new(area_id))
         .order(egui::Order::Foreground)
@@ -311,5 +324,17 @@ mod tests {
         assert_eq!(arrow_strip_w(&[], 10.0, 2.0), 0.0);
         assert_eq!(arrow_strip_w(&["↑"], 10.0, 2.0), 10.0);
         assert_eq!(arrow_strip_w(&["↑", "↓"], 10.0, 2.0), 22.0);
+    }
+
+    #[test]
+    fn punctuation_keys_map_to_base_symbols() {
+        assert_eq!(egui_key_to_name(&Key::Comma), Some(","));
+        assert_eq!(egui_key_to_name(&Key::Period), Some("."));
+        assert_eq!(egui_key_to_name(&Key::Slash), Some("/"));
+        assert_eq!(egui_key_to_name(&Key::Semicolon), Some(";"));
+        assert_eq!(egui_key_to_name(&Key::Minus), Some("-"));
+        assert_eq!(egui_key_to_name(&Key::Equals), Some("="));
+        assert_eq!(egui_key_to_name(&Key::Backslash), Some("\\"));
+        assert_eq!(egui_key_to_name(&Key::F13), Some("f13"));
     }
 }

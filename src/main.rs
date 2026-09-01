@@ -105,10 +105,11 @@ pub struct H2ACApp {
     pub settings_key: String,
     pub settings_delay: f64,
     pub settings_pre_delay: f64,
+    pub settings_listen_hotkey: String,
     pub context: Option<ContextState>,
     pub library_context: Option<LibraryContext>,
     pub stratagem_settings: StratagemSettings,
-    pub hotkey_rx: Option<mpsc::Receiver<usize>>,
+    pub hotkey_rx: Option<mpsc::Receiver<hotkey::HotkeyAction>>,
     pub hotkey: Option<hotkey::HotkeyListener>,
 }
 
@@ -171,6 +172,7 @@ impl H2ACApp {
             settings_key: String::new(),
             settings_delay: 0.05,
             settings_pre_delay: 0.12,
+            settings_listen_hotkey: String::new(),
             context: None,
             library_context: None,
             stratagem_settings: StratagemSettings { visible: false, name: String::new(), icon_key: String::new(), command_text: String::new(), description: String::new(), category: String::new(), is_plugin: false, original_name: String::new() },
@@ -178,7 +180,7 @@ impl H2ACApp {
             hotkey: None,
         };
 
-        if app.model.listening {
+        if app.model.listening || !app.model.config.listen_hotkey.trim().is_empty() {
             app.start_hotkeys();
         }
         app
@@ -205,6 +207,7 @@ impl H2ACApp {
         self.settings_key = self.model.config.stratagem_key.clone();
         self.settings_delay = self.model.config.key_delay;
         self.settings_pre_delay = self.model.config.pre_delay;
+        self.settings_listen_hotkey = self.model.config.listen_hotkey.clone();
         self.show_settings = true;
     }
 
@@ -222,25 +225,40 @@ impl H2ACApp {
         }
     }
 
-    /// 由 config.slot_hotkeys 构建 键名→槽位 映射（非法槽位/键名被过滤）
-    fn hotkey_map(config: &config::Config) -> HashMap<String, usize> {
-        config
-            .slot_hotkeys
-            .iter()
-            .filter_map(|(k, v)| Some((v.clone(), k.parse::<usize>().ok()?)))
-            .filter(|(_, s)| *s < SLOT_COUNT)
-            .collect()
+    /// 由 config 构建 键名→动作 映射（非法槽位/键名被过滤）。
+    /// 监听开关热键始终生效；已静音时槽位热键不会进入映射。
+    fn hotkey_action_map(config: &config::Config, listening: bool) -> HashMap<String, hotkey::HotkeyAction> {
+        use hotkey::HotkeyAction;
+        let mut map: HashMap<String, hotkey::HotkeyAction> = HashMap::new();
+
+        if listening {
+            for (slot_key, key_raw) in &config.slot_hotkeys {
+                if let Ok(slot) = slot_key.parse::<usize>() {
+                    if slot < SLOT_COUNT && !key_raw.trim().is_empty() {
+                        map.insert(hotkey::normalize_key_name(key_raw), HotkeyAction::Slot(slot));
+                    }
+                }
+            }
+        }
+
+        if !config.listen_hotkey.trim().is_empty() {
+            map.insert(
+                hotkey::normalize_key_name(&config.listen_hotkey),
+                HotkeyAction::ToggleListening,
+            );
+        }
+        map
     }
 
     /// 监听运行中热键配置变化后调用，使运行中的钩子立即使用新映射
     pub fn sync_hotkey_map(&self) {
         if self.hotkey.is_some() {
-            hotkey::update_map(&Self::hotkey_map(&self.model.config));
+            hotkey::update_map(&Self::hotkey_action_map(&self.model.config, self.model.listening));
         }
     }
 
     fn start_hotkeys(&mut self) {
-        let map = Arc::new(Mutex::new(Self::hotkey_map(&self.model.config)));
+        let map = Arc::new(Mutex::new(Self::hotkey_action_map(&self.model.config, self.model.listening)));
         let (tx, rx) = mpsc::channel();
         self.hotkey = Some(hotkey::HotkeyListener::start(map, tx));
         self.hotkey_rx = Some(rx);
@@ -256,10 +274,19 @@ impl H2ACApp {
     pub fn toggle_listening(&mut self) {
         self.model.listening = !self.model.listening;
         if self.model.listening {
-            self.start_hotkeys();
+            if self.hotkey.is_none() {
+                self.start_hotkeys();
+            } else {
+                self.sync_hotkey_map();
+            }
             self.log(LogKind::Info, "热键监听已开启");
         } else {
-            self.stop_hotkeys();
+            // 绑定了监听开关热键时必须保留钩子，否则无法再通过热键重新开启
+            if self.model.config.listen_hotkey.trim().is_empty() {
+                self.stop_hotkeys();
+            } else {
+                self.sync_hotkey_map();
+            }
             self.log(LogKind::Warn, "热键监听已关闭");
         }
         self.model.config.listening_enabled = self.model.listening;
@@ -289,11 +316,24 @@ impl eframe::App for H2ACApp {
             ctx.set_style(theme::apply_scaled(&self.model.metrics));
         }
 
-        if let Some(ref rx) = self.hotkey_rx {
-            if let Ok(s) = rx.try_recv() { self.execute_slot(s); }
+        let mut hotkey_actions: Vec<hotkey::HotkeyAction> = Vec::new();
+        if let Some(rx) = &self.hotkey_rx {
+            while let Ok(action) = rx.try_recv() {
+                hotkey_actions.push(action);
+            }
+        }
+        for action in hotkey_actions {
+            match action {
+                hotkey::HotkeyAction::Slot(slot) => self.execute_slot(slot),
+                hotkey::HotkeyAction::ToggleListening => self.toggle_listening(),
+            }
         }
         if let Some(listener) = &mut self.hotkey {
             listener.poll();
+        }
+        // 钩子存在时保持低频重绘，保证窗口未聚焦时也能及时消费全局热键消息
+        if self.hotkey.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(66));
         }
         let now = ctx.input(|i| i.time);
         for v in self.model.flash.values_mut() {
@@ -400,4 +440,33 @@ fn main() -> Result<(), eframe::Error> {
         },
         Box::new(|cc| Ok(Box::new(H2ACApp::new(&cc.egui_ctx)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hotkey::HotkeyAction;
+
+    #[test]
+    fn listen_hotkey_wins_over_slot_hotkey() {
+        let mut cfg = config::Config::default();
+        cfg.listen_hotkey = "f8".into();
+        cfg.slot_hotkeys.insert("0".into(), "f8".into());
+        cfg.slot_hotkeys.insert("1".into(), ",".into());
+
+        let map = H2ACApp::hotkey_action_map(&cfg, true);
+        assert_eq!(map.get("f8"), Some(&HotkeyAction::ToggleListening));
+        assert_eq!(map.get(","), Some(&HotkeyAction::Slot(1)));
+    }
+
+    #[test]
+    fn muted_map_contains_only_listen_hotkey() {
+        let mut cfg = config::Config::default();
+        cfg.listen_hotkey = "slash".into();
+        cfg.slot_hotkeys.insert("0".into(), ".".into());
+
+        let map = H2ACApp::hotkey_action_map(&cfg, false);
+        assert_eq!(map.get("/"), Some(&HotkeyAction::ToggleListening));
+        assert!(!map.contains_key("."));
+    }
 }

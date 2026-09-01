@@ -42,6 +42,7 @@ pub struct LibraryState {
 #[derive(Default)]
 pub struct CaptureState {
     pub capturing: Option<usize>,
+    pub capturing_listen: bool,
     pub captured: String,
     pub settings_capture: Option<String>,
 }

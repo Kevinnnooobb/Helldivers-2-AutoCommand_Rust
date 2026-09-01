@@ -43,6 +43,13 @@ static ICON_DATA: &[(&str, &[u8])] = icons![
     upload_data, warp_pack,
 ];
 
+/// 文件名以数字开头，无法作为 Rust ident 进入上面的 icons! 宏，单独登记。
+/// 与 wiki_fetcher::name_to_snake("40-K Meltagun") 生成的 `40_k_meltagun` 保持一致。
+static ICON_DATA_EXTRA: &[(&str, &[u8])] = &[(
+    "40_k_meltagun",
+    include_bytes!("../assets/icons/40_k_meltagun.png"),
+)];
+
 pub struct IconStore {
     map: HashMap<String, TextureHandle>,
 }
@@ -61,8 +68,8 @@ impl IconStore {
     pub fn load(ctx: &Context) -> Self {
         let mut map = HashMap::new();
 
-        // 1. 嵌入的内置图标
-        for (key, bytes) in ICON_DATA {
+        // 1. 嵌入的内置图标（数字开头文件名单独放在 ICON_DATA_EXTRA）
+        for (key, bytes) in ICON_DATA.iter().chain(ICON_DATA_EXTRA) {
             if let Some(tex) = load_png(ctx, (*key).to_string(), bytes) {
                 map.insert((*key).to_string(), tex);
             }

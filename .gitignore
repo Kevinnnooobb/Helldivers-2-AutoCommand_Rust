@@ -3,3 +3,7 @@
 *.pdb
 panic.log
 /docs
+
+# local wiki page snapshots
+/Stratagems - The Helldivers Wiki.html
+/Stratagems - The Helldivers Wiki_files/

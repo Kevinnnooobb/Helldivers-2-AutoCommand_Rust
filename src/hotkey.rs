@@ -15,11 +15,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT,
 };
 
+/// 全局热键触发的动作
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotkeyAction {
+    /// 执行指定槽位的战备
+    Slot(usize),
+    /// 开关监听状态
+    ToggleListening,
+}
+
 /// 钩子线程与 UI 线程共享的状态（回调只能访问全局数据）
 #[derive(Clone)]
 struct HotkeyShared {
-    map: Arc<Mutex<HashMap<String, usize>>>,
-    tx: Sender<usize>,
+    map: Arc<Mutex<HashMap<String, HotkeyAction>>>,
+    tx: Sender<HotkeyAction>,
 }
 
 static HOTKEY_STATE: Mutex<Option<HotkeyShared>> = Mutex::new(None);
@@ -31,6 +40,8 @@ pub struct HotkeyListener {
     thread_id: Option<u32>,
 }
 
+/// Windows VK → 配置中使用的规范按键名。
+/// 标点键统一存成未按 Shift 的基础字符，与键盘钩子看到的物理键保持一致。
 pub fn vk_to_name(vk: u32) -> String {
     match vk {
         0x30..=0x39 => format!("{}", vk - 0x30),
@@ -39,19 +50,53 @@ pub fn vk_to_name(vk: u32) -> String {
         0x73 => "f4".into(), 0x74 => "f5".into(), 0x75 => "f6".into(),
         0x76 => "f7".into(), 0x77 => "f8".into(), 0x78 => "f9".into(),
         0x79 => "f10".into(), 0x7A => "f11".into(), 0x7B => "f12".into(),
+        0x7C => "f13".into(), 0x7D => "f14".into(), 0x7E => "f15".into(),
+        0x7F => "f16".into(), 0x80 => "f17".into(), 0x81 => "f18".into(),
+        0x82 => "f19".into(), 0x83 => "f20".into(), 0x84 => "f21".into(),
+        0x85 => "f22".into(), 0x86 => "f23".into(), 0x87 => "f24".into(),
         0x60 => "numpad0".into(), 0x61 => "numpad1".into(), 0x62 => "numpad2".into(),
         0x63 => "numpad3".into(), 0x64 => "numpad4".into(), 0x65 => "numpad5".into(),
         0x66 => "numpad6".into(), 0x67 => "numpad7".into(), 0x68 => "numpad8".into(),
         0x69 => "numpad9".into(),
+        0x21 => "pageup".into(), 0x22 => "pagedown".into(),
+        0x23 => "end".into(), 0x24 => "home".into(),
+        0x25 => "left".into(), 0x26 => "up".into(),
+        0x27 => "right".into(), 0x28 => "down".into(),
+        0x2D => "insert".into(), 0x2E => "delete".into(),
+        0x6B => "+".into(), 0x6D => "-".into(), 0x6E => ".".into(), 0x6F => "/".into(),
         0x20 => "space".into(), 0x0D => "enter".into(), 0x09 => "tab".into(),
         0x1B => "esc".into(), 0x08 => "backspace".into(),
+        0xBA => ";".into(), 0xBB => "=".into(), 0xBC => ",".into(),
+        0xBD => "-".into(), 0xBE => ".".into(), 0xBF => "/".into(),
+        0xC0 => "`".into(), 0xDB => "[".into(), 0xDC => "\\".into(),
+        0xDD => "]".into(), 0xDE => "'".into(),
         _ => format!("vk({vk})"),
+    }
+}
+
+/// 把用户手输的键名（Comma/Period/Slash 等）归一到 vk_to_name 使用的规范名。
+pub fn normalize_key_name(raw: &str) -> String {
+    let key = raw.trim().to_lowercase();
+    match key.as_str() {
+        "comma" => ",".into(),
+        "period" | "dot" => ".".into(),
+        "slash" | "divide" => "/".into(),
+        "semicolon" | "colon" => ";".into(),
+        "minus" | "dash" => "-".into(),
+        "plus" => "=".into(),
+        "equals" | "equal" => "=".into(),
+        "openbracket" | "leftbracket" => "[".into(),
+        "closebracket" | "rightbracket" => "]".into(),
+        "backslash" => "\\".into(),
+        "backtick" | "grave" => "`".into(),
+        "quote" | "apostrophe" => "'".into(),
+        _ => key,
     }
 }
 
 impl HotkeyListener {
     /// 安装钩子并启动消息泵线程；线程 id 经内部通道回传，供 stop() 唤醒。
-    pub fn start(hotkey_map: Arc<Mutex<HashMap<String, usize>>>, tx: Sender<usize>) -> Self {
+    pub fn start(hotkey_map: Arc<Mutex<HashMap<String, HotkeyAction>>>, tx: Sender<HotkeyAction>) -> Self {
         if let Ok(mut slot) = HOTKEY_STATE.lock() {
             *slot = Some(HotkeyShared { map: hotkey_map, tx });
         }
@@ -94,8 +139,8 @@ impl HotkeyListener {
     }
 }
 
-/// 热更新热键映射（监听运行中修改 slot_hotkeys 后调用；未监听时为 no-op）。
-pub fn update_map(new_map: &HashMap<String, usize>) {
+/// 热更新热键映射（监听运行中修改 slot_hotkeys / listen_hotkey 后调用；未监听时为 no-op）。
+pub fn update_map(new_map: &HashMap<String, HotkeyAction>) {
     if let Some(shared) = HOTKEY_STATE.lock().ok().and_then(|s| s.as_ref().cloned()) {
         if let Ok(mut map) = shared.map.lock() {
             map.clear();
@@ -148,8 +193,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let key_name = vk_to_name(vk);
             if let Some(shared) = HOTKEY_STATE.lock().ok().and_then(|s| s.as_ref().cloned()) {
                 if let Ok(map) = shared.map.lock() {
-                    if let Some(&slot) = map.get(&key_name) {
-                        let _ = shared.tx.send(slot);
+                    if let Some(&action) = map.get(&key_name) {
+                        let _ = shared.tx.send(action);
                     }
                 }
             }
@@ -170,9 +215,44 @@ mod tests {
         assert_eq!(vk_to_name(0x5A), "z");
         assert_eq!(vk_to_name(0x70), "f1");
         assert_eq!(vk_to_name(0x7B), "f12");
+        assert_eq!(vk_to_name(0x7C), "f13");
+        assert_eq!(vk_to_name(0x87), "f24");
         assert_eq!(vk_to_name(0x20), "space");
         assert_eq!(vk_to_name(0x1B), "esc");
         assert_eq!(vk_to_name(0x60), "numpad0");
+        assert_eq!(vk_to_name(0x25), "left");
+        assert_eq!(vk_to_name(0x26), "up");
+        assert_eq!(vk_to_name(0x27), "right");
+        assert_eq!(vk_to_name(0x28), "down");
+        assert_eq!(vk_to_name(0x2D), "insert");
+        assert_eq!(vk_to_name(0x2E), "delete");
+        assert_eq!(vk_to_name(0x21), "pageup");
+        assert_eq!(vk_to_name(0x22), "pagedown");
+    }
+
+    #[test]
+    fn vk_names_punctuation_base_symbols() {
+        assert_eq!(vk_to_name(0xBC), ",");
+        assert_eq!(vk_to_name(0xBE), ".");
+        assert_eq!(vk_to_name(0xBF), "/");
+        assert_eq!(vk_to_name(0xBA), ";");
+        assert_eq!(vk_to_name(0xBB), "=");
+        assert_eq!(vk_to_name(0xBD), "-");
+        assert_eq!(vk_to_name(0xC0), "`");
+        assert_eq!(vk_to_name(0xDB), "[");
+        assert_eq!(vk_to_name(0xDC), "\\");
+        assert_eq!(vk_to_name(0xDD), "]");
+        assert_eq!(vk_to_name(0xDE), "'");
+        assert_eq!(vk_to_name(0x6F), "/");
+    }
+
+    #[test]
+    fn normalize_key_name_aliases() {
+        assert_eq!(normalize_key_name("Comma"), ",");
+        assert_eq!(normalize_key_name("Period"), ".");
+        assert_eq!(normalize_key_name("slash"), "/");
+        assert_eq!(normalize_key_name("semicolon"), ";");
+        assert_eq!(normalize_key_name("F8"), "f8");
     }
 
     #[test]

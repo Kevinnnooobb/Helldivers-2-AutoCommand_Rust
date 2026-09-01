@@ -59,6 +59,18 @@ static SCANCODE_MAP: LazyLock<HashMap<&'static str, ScanData>> = LazyLock::new(|
     m.insert("end", (0x4F, true));
     m.insert("pageup", (0x49, true));
     m.insert("pagedown", (0x51, true));
+    m.insert(";", (0x27, false));
+    m.insert("=", (0x0D, false));
+    m.insert(",", (0x33, false));
+    m.insert("-", (0x0C, false));
+    m.insert(".", (0x34, false));
+    m.insert("/", (0x35, false));
+    m.insert("`", (0x29, false));
+    m.insert("[", (0x1A, false));
+    m.insert("]", (0x1B, false));
+    m.insert("\\", (0x2B, false));
+    m.insert("'", (0x28, false));
+    m.insert("+", (0x4E, false));
     m.insert("capslock", (0x3A, false));
     let digits: [(u16, &str); 10] = [
         (0x02, "1"), (0x03, "2"), (0x04, "3"), (0x05, "4"), (0x06, "5"),
@@ -227,6 +239,13 @@ mod tests {
     #[test]
     fn scancode_map_covers_all_direction_forms() {
         for key in ["↑", "↓", "←", "→", "up", "down", "left", "right"] {
+            assert!(lookup_scancode(key).is_ok(), "missing scancode for {key}");
+        }
+    }
+
+    #[test]
+    fn scancode_map_covers_punctuation() {
+        for key in [",", ".", "/", ";", "=", "-", "`", "[", "]", "\\", "'", "+"] {
             assert!(lookup_scancode(key).is_ok(), "missing scancode for {key}");
         }
     }

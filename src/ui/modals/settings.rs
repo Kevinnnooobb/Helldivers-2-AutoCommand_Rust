@@ -17,12 +17,14 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
             "←" => "请按下 ← 键",
             "→" => "请按下 → 键",
             "stratagem" => "请按下激活键",
+            "listen" => "请按下监听开关快捷键",
             _ => "按下目标按键",
         };
         let just = key_capture_modal(ctx, "settings_capture", title, m, &mut app.capture.captured, |_, _| {});
         if just {
             match field.as_str() {
                 "stratagem" => app.settings_key = app.capture.captured.clone(),
+                "listen" => app.settings_listen_hotkey = app.capture.captured.clone(),
                 dir => { app.settings_bindings.insert(dir.to_string(), app.capture.captured.clone()); }
             }
             app.capture.settings_capture = None;
@@ -65,6 +67,18 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                     }
                     ui.add(egui::TextEdit::singleline(&mut app.settings_key).font(m.hud(13.0)).desired_width(80.0));
                 });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("监听开关:").font(m.hud(13.0)));
+                    if hud_button(ui, "🎬", Vec2::new(32.0, 24.0), m, GOLD_MID, false).clicked() {
+                        app.capture.settings_capture = Some("listen".into());
+                        app.capture.captured.clear();
+                        app.capture.capturing = None;
+                        app.capture.capturing_listen = false;
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut app.settings_listen_hotkey).font(m.hud(13.0)).desired_width(80.0));
+                    ui.label(egui::RichText::new("全局快速开关").font(m.hud(9.0)).color(TEXT_DIM));
+                });
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("按键延迟(秒):").font(m.hud(13.0)));
                     ui.add(egui::DragValue::new(&mut app.settings_delay).speed(0.01).range(0.01..=0.5));
@@ -81,7 +95,14 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                         app.model.config.stratagem_key = app.settings_key.clone();
                         app.model.config.key_delay = app.settings_delay;
                         app.model.config.pre_delay = app.settings_pre_delay;
+                        app.model.config.listen_hotkey = app.settings_listen_hotkey.trim().to_string();
                         config::save_config(&app.model.config);
+                        // 让新热键立即生效；静音且无监听热键时回收钩子
+                        if app.model.listening || !app.model.config.listen_hotkey.is_empty() {
+                            if app.hotkey.is_none() { app.start_hotkeys(); } else { app.sync_hotkey_map(); }
+                        } else {
+                            app.stop_hotkeys();
+                        }
                         app.show_settings = false;
                         app.log(LogKind::Info, "设置已保存");
                     }

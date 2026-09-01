@@ -26,12 +26,12 @@
 - **双模式**
   - **主界面** (1100×640) — 完整战术终端：自定义标题栏、2×5 槽位网格、详情面板、战备库、日志栏
   - **紧凑模式** (554×56) — 无边框悬浮迷你条，始终置顶，点击图标即执行
-- **Wiki 数据拉取** — 一键从 Stratagem Hero Trainer 拉取最新战备数据，自动差集比对，仅新增写入 `plugins/_wiki_new.json`；启动时自动检测缓存，支持一键清除
+- **Wiki 数据拉取** — 一键从 [helldivers.wiki.gg/wiki/Stratagems](https://helldivers.wiki.gg/wiki/Stratagems) 页面的战备表格拉取最新数据（Name / Stratagem Code 列），自动差集比对，仅新增写入 `plugins/_wiki_new.json`；启动时自动检测缓存，支持一键清除
 - **插件系统** — JSON 文件放入 `plugins/` 即可扩展战备，启动时自动加载
 - **内置 UI 创建器** — 免手写 JSON：序列录制器（方向键/WASD 捕获）+ 战备录入（指令自动规范为 `up/down/left/right` 格式）
-- **按键设置** — 方向键映射（WASD / ESDF / 箭头）、激活键（支持 `lctrl`/`rctrl`/`lalt`/`ralt` 手动输入）、按键延迟 + 预延迟可调
+- **按键设置** — 方向键映射（WASD / ESDF / 箭头）、激活键（支持 `lctrl`/`rctrl`/`lalt`/`ralt` 手动输入）、按键延迟 + 预延迟可调；槽位快捷键支持字母、数字、F1–F24 与 `,` `.` `/` 等标点
 - **执行闪光** — 全局热键或双击触发时金色闪光（0.7s 衰减）
-- **监听开关** — 状态灯一键启停全局热键，呼吸脉冲动画；热键与 Profile 修改即时生效，无需重启应用
+- **监听开关** — 状态灯一键启停全局热键，呼吸脉冲动画；可为监听开关绑定全局快捷键快速启停；热键与 Profile 修改即时生效，无需重启应用
 - **运行时图标加载** — exe 旁 `assets/icons/` 下新增 PNG 自动发现，无需重编译
 
 ---
@@ -80,7 +80,7 @@ cargo build --release
 | **切换紧凑模式** | 标题栏▦按钮 |
 | **还原主界面** | 紧凑条右侧还原按钮 |
 | **拖拽窗口** | 标题栏区域按住拖拽 |
-| **监听开关** | 点击顶栏或紧凑条状态灯 |
+| **监听开关** | 点击顶栏或紧凑条状态灯；右键状态灯绑定全局快捷键 |
 
 ### 按键设置
 
@@ -92,6 +92,7 @@ cargo build --release
 | 激活键 | Ctrl | `rctrl` / `lalt` 等手动输入以区分左右修饰键 |
 | 按键延迟 | 0.08s | 每次按键间隔 |
 | 预延迟 | 0.12s | 激活键按下后等待指令面板弹出 |
+| 监听开关 | 无 | 全局快捷键快速启停监听（🎬捕获或手动输入，留空清除） |
 
 ### Profile 管理
 
@@ -137,7 +138,8 @@ Profile 含槽位分配 + 插件战备 + 热键绑定，存储在 `profiles/` �
   "stratagem_key": "ctrl",
   "key_delay": 0.08,
   "pre_delay": 0.12,
-  "slot_hotkeys": { "0": "f1" },
+  "slot_hotkeys": { "0": "f1", "1": "," },
+  "listen_hotkey": "f8",
   "loadout": [0, 25, 48, null, null, null, null, null, null, null],
   "listening_enabled": true,
   "last_profile": "bots_v1",
@@ -158,7 +160,7 @@ h2ac-rs/
 ├── installer.iss                    # Inno Setup 安装脚本
 ├── assets/
 │   ├── fonts/                       # Saira Condensed 内嵌
-│   ├── icons/                       # 106 PNG（内置嵌入 + 运行时发现）
+│   ├── icons/                       # 107 PNG（内置嵌入 + 运行时发现）
 │   └── icon-removebg.png            # 应用图标
 ├── src/
 │   ├── main.rs                      # 入口 / 主循环 / 热键与 Wiki 装配
@@ -169,13 +171,13 @@ h2ac-rs/
 │   ├── executor.rs                  # SendInput（execute_command 核心）
 │   ├── hotkey.rs                    # WH_KEYBOARD_LL 全局钩子（显式生命周期 + 热更新）
 │   ├── plugin.rs                    # 插件扫描 / 加载 / 统一改写
-│   ├── wiki_fetcher.rs              # Wiki JS 解析与异步拉取
+│   ├── wiki_fetcher.rs              # Wiki HTML 表格解析与异步拉取
 │   ├── icons.rs                     # IconStore（嵌入 + 磁盘兜底）
 │   ├── theme.rs                     # 设计系统
 │   ├── widgets.rs                   # HUD 组件库
 │   ├── stratagems.rs                # 战备数据库 + PluginStratagem 类型
 │   ├── util.rs                      # 基础设施：app_dir / save_json / 后台日志
-│   ├── fixtures/                    # 单元测试数据（wiki_sample.js）
+│   ├── fixtures/                    # 单元测试数据（wiki_stratagems.html）
 │   ├── model/                       # H2ACApp 方法分拆
 │   │   ├── slots.rs / library.rs / category.rs / plugins.rs / wiki.rs
 │   └── ui/                          # 视图面板
@@ -198,7 +200,7 @@ cargo clippy --all-targets -- -W clippy::all    # 静态检查（当前 0 警告
 cargo build --release                           # 产物 target/release/h2ac-rs.exe
 ```
 
-测试覆盖：Wiki JS 解析器（fixture 进仓库，不依赖外部文件）、方向转换契约、Config/Profile 序列化与值域校验、扫描码映射与别名、热键键名、指令文本解析、槽位推进状态机。
+测试覆盖：Wiki HTML 表格解析器（fixture 进仓库，不依赖外部文件；债券表不误解析）、方向转换契约、Config/Profile 序列化与值域校验、扫描码映射与别名、热键键名、指令文本解析、槽位推进状态机。
 
 ---
 
@@ -221,7 +223,7 @@ cargo build --release                           # 产物 target/release/h2ac-rs.
 
 **Q: 插件战备不显示图标？**
 - 图标 key 必须在 `assets/icons/{key}.png` 存在
-- 内置 106 个图标已嵌入，新增 PNG 放 exe 旁 `assets/icons/` 即可
+- 内置 107 个图标已嵌入，新增 PNG 放 exe 旁 `assets/icons/` 即可
 
 **Q: 如何更新数据？**
 - 点击战备库头部🔍按钮 → 自动从 Wiki 拉取并差集比对
@@ -231,9 +233,8 @@ cargo build --release                           # 产物 target/release/h2ac-rs.
 ## 致谢
 
 - 图标素材 [nvigneux/Helldivers-2-Stratagems-icons-svg](https://github.com/nvigneux/Helldivers-2-Stratagems-icons-svg)
-- 战备数据 [Stratagem Hero Trainer](https://github.com/nvigneux/Stratagem-Hero-Trainer)
+- 战备数据 [helldivers.wiki.gg/wiki/Stratagems](https://helldivers.wiki.gg/wiki/Stratagems)
 - 字体 [Saira Condensed](https://fonts.google.com/specimen/Saira+Condensed) (OFL)
-- Wiki 数据 [helldivers.wiki.gg](https://helldivers.wiki.gg/wiki/Stratagems)
 
 ## 许可
 

@@ -33,6 +33,9 @@ pub struct Config {
     pub pre_delay: f64,
     #[serde(default)]
     pub slot_hotkeys: HashMap<String, String>,
+    /// 全局监听开关快捷键（按键名，例如 "f8" 或 ","），空字符串表示未绑定
+    #[serde(default)]
+    pub listen_hotkey: String,
     #[serde(default = "empty_loadout")]
     pub loadout: Vec<Option<usize>>,
     #[serde(default = "default_true")]
@@ -67,6 +70,7 @@ impl Default for Config {
             key_delay: default_key_delay(),
             pre_delay: default_pre_delay(),
             slot_hotkeys: HashMap::new(),
+            listen_hotkey: String::new(),
             loadout: empty_loadout(),
             listening_enabled: true,
             last_profile: String::new(),
@@ -181,6 +185,7 @@ mod tests {
         assert_eq!(cfg.pre_delay, 0.12);
         assert!(cfg.listening_enabled);
         assert!(cfg.slot_hotkeys.is_empty());
+        assert!(cfg.listen_hotkey.is_empty());
     }
 
     #[test]
