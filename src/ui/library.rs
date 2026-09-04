@@ -32,9 +32,12 @@ pub fn render_library(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics)
                     app.creator.open = !app.creator.open;
                 }
                 ui.add_space(4.0);
-                let fetching = app.wiki.fetch_rx.is_some();
+                let fetching = app.network_busy();
                 if glyph_button(ui, if fetching { Glyph::Restore } else { Glyph::Search }, 24.0,
-                    if fetching { "正在拉取…" } else if app.wiki.cache_exists { "刷新 Wiki 数据" } else { "从 Wiki 拉取战备数据" }
+                    if app.wiki.fetch_rx.is_some() { "正在拉取数据…" }
+                    else if app.icon_rx.is_some() { "正在补齐缺失图标…" }
+                    else if app.wiki.cache_exists { "刷新战备数据" }
+                    else { "自动获取战备数据" }
                 ).clicked() && !fetching {
                     app.creator.open = true;
                     app.creator.tab = crate::state::CreatorTab::Fetch;

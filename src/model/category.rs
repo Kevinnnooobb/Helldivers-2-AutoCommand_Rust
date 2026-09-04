@@ -14,7 +14,7 @@ impl H2ACApp {
         save_config(&self.model.config);
         // 运行时同步插件战备分类（持久化由 category_overrides 在 config.json 承担）
         for p in &mut self.plugins.stratagems {
-            if p.name == name || p.name == format!("{name} (Wiki)") {
+            if p.name == name {
                 p.category = category.to_string();
                 break;
             }

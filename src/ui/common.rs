@@ -11,7 +11,8 @@ pub fn cat_short(cat: &str) -> &'static str {
         "Emplacements" => "Emplace",
         "Backpacks" => "Backpacks",
         "Vehicles" => "Vehicles",
-        "NEW (Wiki)" => "New",
+        "Objective" => "Objective",
+        "Unavailable" => "Unavail",
         _ => "?",
     }
 }

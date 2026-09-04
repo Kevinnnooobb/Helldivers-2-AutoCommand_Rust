@@ -103,4 +103,23 @@ impl IconStore {
     pub fn get(&self, key: &str) -> Option<&TextureHandle> {
         self.map.get(key)
     }
+
+    pub fn has(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
+    /// 运行期注册一张 PNG（如 Wiki 自动补齐的图标）：
+    /// 解码并缩放到 128px 纹理后入缓存；已存在时直接返回成功。
+    pub fn insert_png(&mut self, ctx: &Context, key: String, bytes: &[u8]) -> bool {
+        if self.map.contains_key(&key) {
+            return true;
+        }
+        match load_png(ctx, key.clone(), bytes) {
+            Some(tex) => {
+                self.map.insert(key, tex);
+                true
+            }
+            None => false,
+        }
+    }
 }

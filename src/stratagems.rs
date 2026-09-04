@@ -14,6 +14,15 @@ pub const CAT_SENTRIES: &str = "Sentries";
 pub const CAT_EMPLACEMENTS: &str = "Emplacements";
 pub const CAT_BACKPACKS: &str = "Backpacks";
 pub const CAT_VEHICLES: &str = "Vehicles";
+pub const CAT_OBJECTIVE: &str = "Objective";
+pub const CAT_UNAVAILABLE: &str = "Unavailable";
+
+/// 页面分类顺序（以 helldivers.wiki.gg/wiki/Stratagems 页面为准）：
+/// Offensive → Supply → Defensive → Other 四个许可下的分组依次排列。
+pub const PAGE_CATEGORY_ORDER: &[&str] = &[
+    CAT_ORBITAL, CAT_EAGLE, CAT_SUPPORT, CAT_BACKPACKS, CAT_VEHICLES,
+    CAT_SENTRIES, CAT_EMPLACEMENTS, CAT_MISSION, CAT_OBJECTIVE, CAT_UNAVAILABLE,
+];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Stratagem {
@@ -266,15 +275,9 @@ pub static STRATAGEMS: &[Stratagem] = &[
         icon: "emancipator_exosuit" },
 ];
 
+/// 分类栏顺序以 helldivers.wiki.gg/wiki/Stratagems 页面为准
 pub fn get_categories() -> Vec<&'static str> {
-    let mut cats: Vec<&'static str> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for s in STRATAGEMS {
-        if seen.insert(s.category) {
-            cats.push(s.category);
-        }
-    }
-    cats
+    PAGE_CATEGORY_ORDER.to_vec()
 }
 
 pub fn get_by_category(cat: &str) -> Vec<&'static Stratagem> {
@@ -343,6 +346,13 @@ pub struct PluginStratagem {
     pub command: Vec<String>,
     pub description: String,
     pub icon: String,
+    /// 数据来源标记：空 = 用户插件；plugin::WIKI_SOURCE = 自动获取的页面数据
+    #[serde(default)]
+    pub source: String,
+    /// 可选：页面上的图标文件在线地址（与 `icon` 键对应的源图）。
+    /// 本地图标缺失时据此下载并栅格化；仅在自动获取的数据上设置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
 }
 
 /// 槽位列表中的插件占位哨兵（对应 plugin_slots 映射中的条目）
@@ -454,14 +464,21 @@ mod tests {
     }
 
     #[test]
-    fn categories_are_unique_and_first_is_mission() {
+    fn categories_follow_page_order() {
         let cats = get_categories();
         assert!(!cats.is_empty());
         let mut seen = std::collections::HashSet::new();
         for c in &cats {
             assert!(seen.insert(*c), "duplicate category {c}");
         }
-        assert_eq!(cats[0], CAT_MISSION);
+        // 分类顺序以 helldivers.wiki.gg/wiki/Stratagems 页面为准
+        assert_eq!(
+            cats,
+            vec![
+                CAT_ORBITAL, CAT_EAGLE, CAT_SUPPORT, CAT_BACKPACKS, CAT_VEHICLES,
+                CAT_SENTRIES, CAT_EMPLACEMENTS, CAT_MISSION, CAT_OBJECTIVE, CAT_UNAVAILABLE,
+            ]
+        );
     }
 
     #[test]

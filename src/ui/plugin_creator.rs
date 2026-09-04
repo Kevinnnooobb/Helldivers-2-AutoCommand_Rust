@@ -93,18 +93,25 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
 }
 
 pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
-    ui.label(egui::RichText::new("从社区 Wiki 拉取最新战备数据").font(m.hud_b(14.0)).color(GOLD));
+    ui.label(egui::RichText::new("自动获取最新战备数据").font(m.hud_b(14.0)).color(GOLD));
     ui.add_space(6.0);
     ui.label(egui::RichText::new(format!("数据源: {}", wiki_fetcher::STRATAGEM_DATA_URL))
         .font(m.hud(9.0)).color(TEXT_DIM));
+    ui.label(egui::RichText::new("新增战备按页面分类直接入库，不再附加 New/Wiki 标签")
+        .font(m.hud(9.0)).color(TEXT_DIM));
     ui.add_space(8.0);
 
-    let fetching = app.wiki.fetch_rx.is_some();
+    let fetching = app.network_busy();
 
     if fetching {
         ui.label(egui::RichText::new(&app.wiki.fetch_status).font(m.hud(13.0)).color(TEXT_SUB));
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("⟳ 拉取中…").font(m.hud(13.0)).color(GOLD));
+        let spinner = if app.wiki.fetch_rx.is_some() {
+            "⟳ 拉取中…"
+        } else {
+            "⟳ 正在补齐缺失图标…"
+        };
+        ui.label(egui::RichText::new(spinner).font(m.hud(13.0)).color(GOLD));
     } else {
         let status = if app.wiki.cache_exists {
             "已缓存数据 | 可刷新".to_string()
@@ -230,6 +237,8 @@ pub fn save_plugin_from_creator(app: &mut H2ACApp) {
             command: seq.iter().map(|d| crate::stratagems::arrow_to_dir(d).to_string()).collect(),
             description: String::new(),
             icon: icon.clone(),
+            source: String::new(),
+            icon_url: None,
         }
     }).collect();
 

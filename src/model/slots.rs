@@ -185,6 +185,8 @@ mod tests {
             command: Vec::new(),
             description: String::new(),
             icon: String::new(),
+            source: String::new(),
+            icon_url: None,
         }
     }
 

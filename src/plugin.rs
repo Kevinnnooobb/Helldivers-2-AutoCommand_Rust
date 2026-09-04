@@ -4,10 +4,14 @@ use crate::util;
 use std::fs;
 use std::path::PathBuf;
 
-/// Wiki 拉取结果的持久化文件名（位于 plugins/ 目录，按插件清单格式保存）
-pub const WIKI_PLUGIN_FILE: &str = "_wiki_new.json";
-/// Wiki 拉取结果插件清单的 id
-pub const WIKI_PLUGIN_ID: &str = "_wiki_new";
+/// 页面数据自动获取结果的持久化文件名（位于 plugins/ 目录，按插件清单格式保存）
+pub const WIKI_PLUGIN_FILE: &str = "_wiki.json";
+/// 页面数据自动获取结果插件清单的 id
+pub const WIKI_PLUGIN_ID: &str = "_wiki";
+/// 战备的 runtime 来源标记：自动获取的页面数据
+pub const WIKI_SOURCE: &str = WIKI_PLUGIN_ID;
+/// 旧版缓存文件名（迁移时删除；旧格式带 NEW (Wiki) 分类与 (Wiki) 名称后缀）
+const LEGACY_WIKI_PLUGIN_FILE: &str = "_wiki_new.json";
 
 pub fn plugins_dir() -> PathBuf {
     util::app_dir().join("plugins")
@@ -39,6 +43,18 @@ pub fn load_all() -> Vec<PluginStratagem> {
             continue;
         }
 
+        // 迁移：删除旧版缓存 _wiki_new.json（旧格式带 NEW (Wiki) 分类与 (Wiki) 后缀）
+        let is_wiki = path
+            .file_stem()
+            .is_some_and(|stem| stem == WIKI_PLUGIN_ID);
+        let is_legacy = path
+            .file_name()
+            .is_some_and(|name| name == LEGACY_WIKI_PLUGIN_FILE);
+        if is_legacy {
+            let _ = fs::remove_file(&path);
+            continue;
+        }
+
         let data = match fs::read_to_string(&path) {
             Ok(d) => d,
             Err(_) => continue,
@@ -53,7 +69,10 @@ pub fn load_all() -> Vec<PluginStratagem> {
             continue;
         }
 
-        for s in manifest.stratagems {
+        for mut s in manifest.stratagems {
+            if is_wiki {
+                s.source = WIKI_SOURCE.to_string();
+            }
             stratagems.push(s);
         }
     }
@@ -110,6 +129,8 @@ pub fn create_example_plugin() {
             command: vec!["up".into(), "down".into(), "left".into(), "right".into()],
             description: "这是一个通过插件加载的示例战备".into(),
             icon: "reinforce".into(),
+            source: String::new(),
+            icon_url: None,
         }],
     };
 

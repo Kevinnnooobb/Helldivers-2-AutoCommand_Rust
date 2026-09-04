@@ -6,6 +6,7 @@ mod compact_view;
 mod config;
 mod executor;
 mod hotkey;
+mod icon_fetch;
 mod icons;
 mod main_view;
 mod model;
@@ -111,6 +112,18 @@ pub struct H2ACApp {
     pub stratagem_settings: StratagemSettings,
     pub hotkey_rx: Option<mpsc::Receiver<hotkey::HotkeyAction>>,
     pub hotkey: Option<hotkey::HotkeyListener>,
+    /// 图标在线补齐任务：worker 线程逐条回传结果，主线程注册纹理 + 落盘
+    pub icon_rx: Option<mpsc::Receiver<IconJobResult>>,
+    pub icon_jobs_total: usize,
+    pub icon_jobs_done: usize,
+    pub icon_jobs_ok: usize,
+}
+
+/// 图标补齐单条任务结果（后台线程 → 主线程）
+pub struct IconJobResult {
+    pub key: String,
+    pub png: Option<Vec<u8>>,
+    pub error: Option<String>,
 }
 
 impl H2ACApp {
@@ -178,6 +191,10 @@ impl H2ACApp {
             stratagem_settings: StratagemSettings { visible: false, name: String::new(), icon_key: String::new(), command_text: String::new(), description: String::new(), category: String::new(), is_plugin: false, original_name: String::new() },
             hotkey_rx: None,
             hotkey: None,
+            icon_rx: None,
+            icon_jobs_total: 0,
+            icon_jobs_done: 0,
+            icon_jobs_ok: 0,
         };
 
         if app.model.listening || !app.model.config.listen_hotkey.trim().is_empty() {
@@ -297,6 +314,66 @@ impl H2ACApp {
         self.model.profile_names = list_profiles();
     }
 
+    /// 是否有进行中的网络任务（拉取战备数据 / 补齐图标）
+    pub fn network_busy(&self) -> bool {
+        self.wiki.fetch_rx.is_some() || self.icon_rx.is_some()
+    }
+
+    /// Wiki 数据合并完成后调用：为本地没有图标的自动获取战备发起后台下载。
+    /// 每个 job = (图标 key, 源图地址)；线程下载 SVG → 栅格化 PNG 后经 channel 回传，
+    /// 由 update() 在主线程注册进 IconStore 并落盘 assets/icons/{key}.png。
+    pub fn start_icon_backfill(&mut self) {
+        if self.icon_rx.is_some() {
+            return;
+        }
+        let jobs: Vec<(String, String)> = self
+            .plugins
+            .stratagems
+            .iter()
+            .filter(|p| p.source == plugin::WIKI_SOURCE)
+            .filter(|p| p.icon_url.is_some())
+            .filter(|p| !self.model.icons.has(&p.icon))
+            .map(|p| (p.icon.clone(), p.icon_url.clone().unwrap_or_default()))
+            .filter(|(_, url)| !url.is_empty())
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+        // 同 key 去重
+        let mut seen = std::collections::HashSet::new();
+        let mut uniq: Vec<(String, String)> = Vec::new();
+        for (k, u) in jobs {
+            if seen.insert(k.clone()) {
+                uniq.push((k, u));
+            }
+        }
+        let total = uniq.len();
+        let (tx, rx) = mpsc::channel();
+        self.icon_jobs_total = total;
+        self.icon_jobs_done = 0;
+        self.icon_jobs_ok = 0;
+        self.icon_rx = Some(rx);
+        self.wiki.fetch_status = format!("发现 {total} 个缺失图标，正在在线补齐…");
+        self.log(LogKind::Info, format!("在线补齐 {total} 个缺失图标…"));
+        std::thread::spawn(move || {
+            for (key, url) in uniq {
+                let result = crate::icon_fetch::fetch_icon_png(&url);
+                let _ = tx.send(match result {
+                    Ok(png) => IconJobResult {
+                        key,
+                        png: Some(png),
+                        error: None,
+                    },
+                    Err(e) => IconJobResult {
+                        key,
+                        png: None,
+                        error: Some(e),
+                    },
+                });
+            }
+        });
+    }
+
 }
 
 impl eframe::App for H2ACApp {
@@ -355,16 +432,17 @@ impl eframe::App for H2ACApp {
                             .cloned()
                             .collect();
                         let new_count = truly_new.len();
-                        // 统一分类为 "NEW (Wiki)"
-                        let mut truly_new = truly_new;
-                        for item in &mut truly_new { item.category = "NEW (Wiki)".into(); }
-                        // 注入运行时（此时分类已统一）
-                        self.plugins.stratagems.retain(|p| !p.name.ends_with("(Wiki)"));
-                        // 写入 _wiki_new.json；全部命中内置时删除陈旧文件，避免重启后加载过期数据
+                        // 分类与位置以网页为准：战备直接保留页面分类（解析器已按
+                        // 页面结构归类），不再附加 NEW (Wiki) 分类或 (Wiki) 名称后缀。
+                        // 替换上一次自动获取的数据（含旧版 "(Wiki)" 后缀残留），保留用户插件。
+                        self.plugins.stratagems.retain(|p| {
+                            p.source != plugin::WIKI_SOURCE && !p.name.ends_with("(Wiki)")
+                        });
+                        // 写入 _wiki.json；全部命中内置时删除陈旧文件，避免重启后加载过期数据
                         if new_count > 0 {
                             let manifest = crate::stratagems::PluginManifest {
                                 id: plugin::WIKI_PLUGIN_ID.into(),
-                                name: "Wiki 新增战备".into(),
+                                name: "页面自动获取的战备数据".into(),
                                 enabled: true,
                                 stratagems: truly_new,
                             };
@@ -374,9 +452,13 @@ impl eframe::App for H2ACApp {
                             let _ = std::fs::remove_file(plugin::wiki_plugin_path());
                         }
                         self.wiki.cache_exists = new_count > 0;
-                        self.log(LogKind::Info, format!("Wiki 拉取完成，新增 {} 条 → plugins/{}", new_count, plugin::WIKI_PLUGIN_FILE));
+                        self.log(LogKind::Info, format!("战备数据获取完成，新增 {} 条 → plugins/{}", new_count, plugin::WIKI_PLUGIN_FILE));
+                        // 本地无图标的战备 → 从页面图标源在线补齐
+                        self.start_icon_backfill();
+                    } else if let Some(Err(e)) = progress.result {
+                        self.log(LogKind::Warn, format!("战备数据获取失败: {e}"));
                     } else {
-                        self.log(LogKind::Warn, "Wiki 数据拉取失败，请检查网络");
+                        self.log(LogKind::Warn, "战备数据获取失败，请检查网络");
                     }
                 }
             }
@@ -387,6 +469,58 @@ impl eframe::App for H2ACApp {
             } else {
                 // 拉取完成/失败：立即重绘呈现最终状态
                 ctx.request_repaint();
+            }
+        }
+
+        // ─── 图标在线补齐：消费后台结果（注册纹理 + 落盘 assets/icons/{key}.png）───
+        if self.icon_rx.is_some() {
+            let mut results: Vec<IconJobResult> = Vec::new();
+            if let Some(rx) = &self.icon_rx {
+                while let Ok(r) = rx.try_recv() {
+                    results.push(r);
+                }
+            }
+            for r in results {
+                self.icon_jobs_done += 1;
+                let key = r.key.clone();
+                match r.png {
+                    Some(png) => {
+                        // 写入 exe 旁 assets/icons/（IconStore 启动时自动发现，重启免重下）
+                        let dir = util::app_dir().join("assets/icons");
+                        let _ = std::fs::create_dir_all(&dir);
+                        let wrote = std::fs::write(dir.join(format!("{key}.png")), &png).is_ok();
+                        let tex_ok = self.model.icons.insert_png(ctx, key.clone(), &png);
+                        if wrote && tex_ok {
+                            self.icon_jobs_ok += 1;
+                            self.log(LogKind::Info, format!("图标已就位: {key}"));
+                        } else {
+                            self.log(LogKind::Warn, format!("图标写入失败: {key}"));
+                        }
+                    }
+                    None => {
+                        self.log(
+                            LogKind::Warn,
+                            format!("图标补齐失败 [{}]: {}", key, r.error.unwrap_or_default()),
+                        );
+                    }
+                }
+                self.wiki.fetch_status =
+                    format!("正在补齐图标 {}/{}…", self.icon_jobs_done, self.icon_jobs_total);
+            }
+
+            if self.icon_jobs_done >= self.icon_jobs_total {
+                let total = self.icon_jobs_total;
+                let ok = self.icon_jobs_ok;
+                self.icon_rx = None;
+                if ok > 0 {
+                    self.log(LogKind::Info, format!("图标补齐完成：成功 {ok}/{total}"));
+                } else {
+                    self.log(LogKind::Warn, format!("图标补齐失败：成功 0/{total}"));
+                }
+                ctx.request_repaint();
+            } else {
+                // 仍在进行：驱动进度显示
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
         }
 
@@ -449,8 +583,7 @@ mod tests {
 
     #[test]
     fn listen_hotkey_wins_over_slot_hotkey() {
-        let mut cfg = config::Config::default();
-        cfg.listen_hotkey = "f8".into();
+        let mut cfg = config::Config { listen_hotkey: "f8".into(), ..Default::default() };
         cfg.slot_hotkeys.insert("0".into(), "f8".into());
         cfg.slot_hotkeys.insert("1".into(), ",".into());
 
@@ -461,8 +594,7 @@ mod tests {
 
     #[test]
     fn muted_map_contains_only_listen_hotkey() {
-        let mut cfg = config::Config::default();
-        cfg.listen_hotkey = "slash".into();
+        let mut cfg = config::Config { listen_hotkey: "slash".into(), ..Default::default() };
         cfg.slot_hotkeys.insert("0".into(), ".".into());
 
         let map = H2ACApp::hotkey_action_map(&cfg, false);

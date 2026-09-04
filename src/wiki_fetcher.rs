@@ -1,9 +1,22 @@
-// Wiki 战备数据自动拉取 — 从 helldivers.wiki.gg/wiki/Stratagems 页面表格解析
+// 战备数据自动获取 — 从 helldivers.wiki.gg/wiki/Stratagems 页面表格解析
+// 页面结构参考：本地保存的 "Stratagems - The Helldivers Wiki.html"（仓库根目录，
+// 仅作为结构参照与测试输入，不作为运行时数据源）。
 //
 // 目标页面使用 MediaWiki 的 wikitable 展示战备：
 //   Icon | Name | Stratagem Code | Base Cooldown
 // 方向序列以 `<img alt="Stratagem Arrow Up/Down/Left/Right.svg">` 的形式内嵌在
 // 表格中，因此这里手写一个零依赖的 HTML 表格提取器（不引入 scraper/regex）。
+//
+// 页面结构（战备分类与位置以页面为准）：
+//   <h3>Offensive Permit</h3>
+//     <details><summary>Orbital Strikes</summary>…<table>…</details>
+//     <details><summary>Eagle Strikes</summary>…<table>…</details>
+//   …
+//   <details><summary>Mission Stratagems</summary>
+//     <big><b>Ship</b></big><table>               ← 块内第一张表之前的子标签，沿用 summary 分类
+//     <p><big><b>Objective</b></big><table>       ← 出现在前一张表之后的标签，视为新分类
+//     <p><big><b>Unavailable</b></big><table>
+// 解析出的战备直接归属页面上的分类，不再附加任何 new / wiki 标签。
 //
 // 关键约束：页面上还有 "Urban Legends" 等债券（Warbond）名称，它们出现在普通
 // 文本或没有 Stratagem Code 列的表格里。只解析同时包含 Name 与 Stratagem Code
@@ -140,7 +153,7 @@ fn extract_api_html(body: &str) -> Result<String, String> {
         .ok_or_else(|| "Wiki API 响应中没有 parse.text".into())
 }
 
-/// 从远端拉取并解析战备数据
+/// 从远端拉取并解析战备数据（仅在线数据源；本地 HTML 快照只作结构参考，不参与运行时数据）
 pub fn fetch_stratagems(
     on_progress: impl Fn(String) + Send + 'static,
     on_done: impl FnOnce(Result<Vec<PluginStratagem>, String>) + Send + 'static,
@@ -152,7 +165,7 @@ pub fn fetch_stratagems(
         let mut last_error: Option<String> = None;
         let mut items: Vec<PluginStratagem> = Vec::new();
 
-        // 首选：直接拉取用户指定的页面 HTML
+        // 首选：直接拉取战备总览页 HTML
         match http_get(&agent, STRATAGEM_DATA_URL) {
             Ok(html) => {
                 on_progress("正在解析战备表格…".into());
@@ -211,8 +224,14 @@ struct StratagemRow {
 /// `Icon | Name | Stratagem Code | Base Cooldown` 的战备表格。
 /// 其他表格（债券列表、导航表）没有 Stratagem Code 列，会被忽略。
 pub fn parse_stratagems_html(html: &str) -> Result<Vec<PluginStratagem>, String> {
+    // 分类以页面结构为准（结构参考：本地保存的页面快照）：
+    // - <details><summary>分类</summary> 内的表格 → 该分类；
+    // - details 块内出现于前一张表之后的 <big><b>分类</b></big> 标签 → 新分类
+    //   （如 Mission Stratagems 块内的 Objective / Unavailable）；
+    // - 无 details 结构时回退到表格之前的最近章节标题映射。
     let cleaned = strip_non_content(html);
     let tables = extract_tables(&cleaned);
+    let details = extract_details_blocks(&cleaned);
 
     let mut rows: Vec<(String, StratagemRow)> = Vec::new();
     let mut qualifying_tables = 0usize;
@@ -222,9 +241,14 @@ pub fn parse_stratagems_html(html: &str) -> Result<Vec<PluginStratagem>, String>
             continue;
         }
         qualifying_tables += 1;
-        let heading = last_heading_before(&cleaned, table.start);
+        let category = table_group_category(&cleaned, &details, table.start)
+            .or_else(|| {
+                let heading = last_heading_before(&cleaned, table.start);
+                (!heading.is_empty()).then(|| category_name(&heading))
+            })
+            .unwrap_or_else(|| "Mission Stratagems".to_string());
         for row in parse_table_rows(&table.html) {
-            rows.push((heading.clone(), row));
+            rows.push((category.clone(), row));
         }
     }
 
@@ -241,24 +265,23 @@ pub fn parse_stratagems_html(html: &str) -> Result<Vec<PluginStratagem>, String>
 
     let mut out: Vec<PluginStratagem> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
-    for (heading, row) in rows {
-        let category = if heading.is_empty() {
-            "Mission Stratagems".to_string()
-        } else {
-            category_name(&heading)
-        };
+    for (category, row) in rows {
         let description = if row.cooldown.is_empty() {
             String::new()
         } else {
-            format!("Wiki 数据 · 基础冷却 {}", row.cooldown)
+            format!("基础冷却 {}", row.cooldown)
         };
+        let icon = icon_key(&row.name, &row.icon_hint);
+        let icon_url = icon_download_url(&row.name, &row.icon_hint);
         let item = PluginStratagem {
-            name: format!("{} (Wiki)", row.name),
+            name: row.name,
             category,
             model: String::new(),
             command: row.command,
             description,
-            icon: icon_key(&row.name, &row.icon_hint),
+            icon,
+            source: crate::plugin::WIKI_SOURCE.to_string(),
+            icon_url,
         };
 
         let dedup_key = (item.command.join(","), item.name.to_lowercase());
@@ -271,6 +294,133 @@ pub fn parse_stratagems_html(html: &str) -> Result<Vec<PluginStratagem>, String>
         return Err("未在页面中解析到任何战备数据".into());
     }
     Ok(out)
+}
+
+// ─── 页面分组（details / big-b 标签）→ 分类 ───
+
+#[derive(Debug)]
+struct DetailsBlock {
+    start: usize,
+    end: usize,
+    summary: String,
+}
+
+/// 提取顶层 <details> ... </details> 块（含嵌套深度追踪）
+fn extract_details_blocks(html: &str) -> Vec<DetailsBlock> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+
+    while let Some(start) = find_open_tag_ci(html, "details", pos) {
+        let Some(open_end) = find_tag_end(html, start) else {
+            break;
+        };
+        let mut cursor = open_end + 1;
+        let mut depth = 1usize;
+        let mut close: Option<usize> = None;
+
+        while cursor < html.len() {
+            let next_open = find_open_tag_ci(html, "details", cursor);
+            let next_close = find_tag_ci(html, "</details", cursor);
+            match (next_open, next_close) {
+                (Some(open), Some(close_pos)) if open < close_pos => {
+                    depth += 1;
+                    let Some(open_end) = find_tag_end(html, open) else {
+                        break;
+                    };
+                    cursor = open_end + 1;
+                }
+                (_, Some(close_pos)) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(close_pos);
+                        break;
+                    }
+                    cursor = close_pos + "</details".len();
+                }
+                _ => break,
+            }
+        }
+
+        let Some(close_pos) = close else { break };
+        let block = &html[start..close_pos];
+        out.push(DetailsBlock {
+            start,
+            end: close_pos,
+            summary: details_summary_text(block),
+        });
+        pos = close_pos + "</details".len();
+    }
+
+    out
+}
+
+/// 提取 <summary>文本</summary> 的内容文本
+fn details_summary_text(block: &str) -> String {
+    let Some(open) = find_open_tag_ci(block, "summary", 0) else {
+        return String::new();
+    };
+    let Some(tag_end) = find_tag_end(block, open) else {
+        return String::new();
+    };
+    let content_start = tag_end + 1;
+    let Some(close) = find_tag_ci(block, "</summary", content_start) else {
+        return String::new();
+    };
+    clean_text(&strip_tags(&block[content_start..close]))
+}
+
+/// 段内出现的 <big><b>标签文本</b></big>（返回段内字节偏移 + 文本）
+fn big_b_labels(segment: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+
+    while let Some(open) = find_open_tag_ci(segment, "big", pos) {
+        let Some(tag_end) = find_tag_end(segment, open) else {
+            break;
+        };
+        let content_start = tag_end + 1;
+        let Some(close) = find_tag_ci(segment, "</big", content_start) else {
+            break;
+        };
+        let text = clean_text(&strip_tags(&segment[content_start..close]));
+        if !text.is_empty() {
+            out.push((open, text));
+        }
+        pos = close + "</big".len();
+    }
+
+    out
+}
+
+/// 表格所属的页面分组分类：
+/// 1. 表格位于 <details> 块内 → 取 summary 文本；
+///    但若最近一个 <big><b> 标签出现在块内第一张表之后，说明它开启了新分组
+///    （Objective / Unavailable），以标签文本为分类。
+/// 2. 无 details 块时返回 None（调用方回退到章节标题映射）。
+fn table_group_category(
+    html: &str,
+    details: &[DetailsBlock],
+    table_start: usize,
+) -> Option<String> {
+    let block = details
+        .iter()
+        .find(|d| d.start < table_start && table_start < d.end)?;
+
+    // 最近一个位于表格之前、details 块之内的 <big><b> 标签
+    let labels = big_b_labels(&html[block.start..table_start]);
+    if let Some((label_pos, text)) = labels.last() {
+        // 标签之前若已有 </table>（即块内已出现过一张表），该标签即为新分组
+        let before_label = &html[block.start..block.start + label_pos];
+        if find_tag_ci(before_label, "</table", 0).is_some() {
+            return Some(text.clone());
+        }
+    }
+
+    if block.summary.is_empty() {
+        None
+    } else {
+        Some(block.summary.clone())
+    }
 }
 
 fn strip_non_content(html: &str) -> String {
@@ -923,6 +1073,52 @@ fn is_non_stratagem_name(name: &str) -> bool {
         || lower.starts_with("file:")
 }
 
+/// helldivers.wiki.gg 的图标文件都在 /images/ 扁平目录下，
+/// 文件全名与页面图标格的 alt/src 一致（空格 → 下划线，其余字符 percent 编码）
+const ICON_FILE_BASE: &str = "https://helldivers.wiki.gg/images/";
+
+/// 图标源图地址推导：
+/// 1. hint 为绝对 URL（http(s)/协议相对）→ 直接使用；
+/// 2. hint 是带图片扩展名的文件名（如 "Eagle Rearm Stratagem Icon Background.svg"）
+///    → 拼成 wiki /images/ 直链；
+/// 3. 兜底：按页面惯例 "<名称> Stratagem Icon Background.svg" 生成候选地址。
+/// 本地已有该 icon 键时不会触发下载，因此候选地址允许保守宽松。
+fn icon_download_url(name: &str, hint: &str) -> Option<String> {
+    let t = hint.trim();
+    if !t.is_empty() {
+        if t.starts_with("http://") || t.starts_with("https://") {
+            return Some(t.to_string());
+        }
+        if t.starts_with("//") {
+            return Some(format!("https:{t}"));
+        }
+        let lower = t.to_lowercase();
+        let has_img_ext = [".svg", ".png", ".webp", ".jpg", ".jpeg", ".gif"]
+            .iter()
+            .any(|ext| lower.ends_with(ext));
+        if has_img_ext && !t.contains('/') {
+            return Some(format!("{ICON_FILE_BASE}{}", file_path(t)));
+        }
+    }
+    let candidate = format!("{name} Stratagem Icon Background.svg");
+    Some(format!("{ICON_FILE_BASE}{}", file_path(&candidate)))
+}
+
+/// MediaWiki 文件路径化：空格 → 下划线，其余非 unreserved 字节 percent 编码
+fn file_path(title: &str) -> String {
+    let mut out = String::with_capacity(title.len() + 8);
+    for b in title.bytes() {
+        match b {
+            b' ' => out.push('_'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// 英文名 → snake_case 图标 key
 fn name_to_snake(name: &str) -> String {
     let s = name
@@ -1025,29 +1221,33 @@ mod tests {
         let items = result.unwrap();
         assert_eq!(items.len(), 5);
 
-        assert_eq!(items[0].name, "Eagle Rearm (Wiki)");
+        assert_eq!(items[0].name, "Eagle Rearm");
         assert_eq!(items[0].category, "Mission Stratagems");
         assert_eq!(items[0].command, vec!["up", "up", "left", "up", "right"]);
         assert_eq!(items[0].icon, "eagle_rearm");
-        assert_eq!(items[0].description, "Wiki 数据 · 基础冷却 0s");
+        assert_eq!(items[0].description, "基础冷却 0s");
+        assert_eq!(items[0].source, crate::plugin::WIKI_SOURCE);
 
-        assert_eq!(items[1].name, "Resupply (Wiki)");
+        assert_eq!(items[1].name, "Resupply");
         assert_eq!(items[1].command, vec!["down", "down", "up", "right"]);
-        assert_eq!(items[1].description, "Wiki 数据 · 基础冷却 180s");
+        assert_eq!(items[1].description, "基础冷却 180s");
 
-        assert_eq!(items[2].name, "Call In Super Destroyer (Wiki)");
+        assert_eq!(items[2].name, "Call In Super Destroyer");
         assert_eq!(
             items[2].command,
             vec!["up", "up", "down", "down", "left", "right", "left", "right"]
         );
         assert_eq!(items[2].description, "");
 
-        assert_eq!(items[3].name, "Reinforce (Wiki)");
+        assert_eq!(items[3].name, "Reinforce");
         assert_eq!(items[3].command, vec!["up", "down", "right", "left", "up"]);
 
-        assert_eq!(items[4].name, "SoS Beacon (Wiki)");
+        assert_eq!(items[4].name, "SoS Beacon");
         assert_eq!(items[4].command, vec!["up", "down", "right", "up"]);
         assert_eq!(items[4].icon, "sos_beacon");
+        // 不再附加任何 new / wiki 标签
+        assert!(items.iter().all(|i| !i.name.contains("(Wiki)")));
+        assert!(items.iter().all(|i| i.category != "NEW (Wiki)"));
     }
 
     #[test]
@@ -1056,7 +1256,119 @@ mod tests {
         // 解析结果必须只有 5 条战备，不能把债券名算进去。
         let items = parse_stratagems_html(SAMPLE).unwrap();
         assert_eq!(items.len(), 5);
-        assert!(items.iter().all(|item| item.name != "Urban Legends (Wiki)"));
+        assert!(items.iter().all(|item| item.name != "Urban Legends"));
+    }
+
+    #[test]
+    fn details_summary_and_big_b_labels_drive_categories() {
+        // 结构参考自本地保存的页面快照：details/summary 为分类，
+        // 块内第一张表之前的 <big><b> 子标签沿用 summary 分类，
+        // 前一张表之后的 <big><b> 标签开启新分类（Objective / Unavailable）。
+        let html = r#"
+        <h2><span class="mw-headline">List of Stratagems</span></h2>
+        <h3><span class="mw-headline">Offensive Permit</span></h3>
+        <details><summary>Orbital Strikes</summary>
+        <table class="wikitable"><thead><tr><th>Icon</th><th>Name</th><th>Stratagem Code</th><th>Base Cooldown</th></tr></thead><tbody>
+        <tr>
+        <td><img alt="Orbital Precision Strike Stratagem Icon Background.svg"></td>
+        <td><a href="/wiki/Orbital_Precision_Strike" title="Orbital Precision Strike">Orbital Precision Strike</a></td>
+        <td><img alt="Stratagem Arrow Right.svg"><img alt="Stratagem Arrow Right.svg"><img alt="Stratagem Arrow Down.svg"></td>
+        <td>100s</td>
+        </tr>
+        </tbody></table>
+        </details>
+        <h3><span class="mw-headline">Other</span></h3>
+        <details><summary>Mission Stratagems</summary>
+        <big><b>Ship</b></big>
+        <table class="wikitable"><thead><tr><th>Icon</th><th>Name</th><th>Stratagem Code</th><th>Base Cooldown</th></tr></thead><tbody>
+        <tr>
+        <td><img alt="Reinforce Stratagem Icon Background.svg"></td>
+        <td><a href="/wiki/Reinforce" title="Reinforce">Reinforce</a></td>
+        <td><img alt="Stratagem Arrow Up.svg"><img alt="Stratagem Arrow Down.svg"><img alt="Stratagem Arrow Right.svg"><img alt="Stratagem Arrow Left.svg"><img alt="Stratagem Arrow Up.svg"></td>
+        <td>0s</td>
+        </tr>
+        </tbody></table>
+        <p><big><b>Objective</b></big></p>
+        <table class="wikitable"><thead><tr><th>Icon</th><th>Name</th><th>Stratagem Code</th><th>Base Cooldown</th></tr></thead><tbody>
+        <tr>
+        <td><img alt="SEAF Artillery Stratagem Icon Background.svg"></td>
+        <td><a href="/wiki/SEAF_Artillery" title="SEAF Artillery">SEAF Artillery</a></td>
+        <td><img alt="Stratagem Arrow Right.svg"><img alt="Stratagem Arrow Up.svg"><img alt="Stratagem Arrow Up.svg"><img alt="Stratagem Arrow Down.svg"></td>
+        <td>0s</td>
+        </tr>
+        </tbody></table>
+        <p><big><b>Unavailable</b></big></p>
+        <table class="wikitable"><thead><tr><th>Icon</th><th>Name</th><th>Stratagem Code</th><th>Base Cooldown</th></tr></thead><tbody>
+        <tr>
+        <td><img alt="Orbital Illumination Flare Stratagem Icon Background.svg"></td>
+        <td><a href="/wiki/Orbital_Illumination_Flare" title="Orbital Illumination Flare">Orbital Illumination Flare</a></td>
+        <td><img alt="Stratagem Arrow Right.svg"><img alt="Stratagem Arrow Right.svg"><img alt="Stratagem Arrow Up.svg"><img alt="Stratagem Arrow Left.svg"></td>
+        <td>0s</td>
+        </tr>
+        </tbody></table>
+        </details>
+        "#;
+        let items = parse_stratagems_html(html).unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].name, "Orbital Precision Strike");
+        assert_eq!(items[0].category, "Orbital Strikes");
+        assert_eq!(items[0].description, "基础冷却 100s");
+        assert_eq!(items[1].name, "Reinforce");
+        assert_eq!(items[1].category, "Mission Stratagems");
+        assert_eq!(items[2].name, "SEAF Artillery");
+        assert_eq!(items[2].category, "Objective");
+        assert_eq!(items[3].name, "Orbital Illumination Flare");
+        assert_eq!(items[3].category, "Unavailable");
+    }
+
+    /// 在线连通性验证（默认忽略）：直接拉取线上页面并解析，
+    /// 用于在页面结构变化时第一时间发现解析器失效。
+    #[test]
+    #[ignore]
+    fn fetch_live_page_parses() {
+        let agent = build_agent();
+        let html = http_get(&agent, STRATAGEM_DATA_URL).expect("拉取线上页面失败");
+        let items = parse_stratagems_html(&html).expect("线上页面解析失败");
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|i| !i.name.contains("(Wiki)")));
+        eprintln!("线上页面解析出 {} 条战备", items.len());
+        let mut counts = std::collections::HashMap::new();
+        for i in &items {
+            *counts.entry(i.category.clone()).or_insert(0usize) += 1;
+        }
+        eprintln!("分类分布: {counts:?}");
+    }
+
+    #[test]
+    fn parse_local_snapshot_if_present() {
+        // 结构参考测试：仓库根目录的本地页面快照用于验证解析器与真实页面结构一致；
+        // 快照只作结构与解析验证，运行时数据一律在线获取，绝不读取本地快照。
+        const SNAPSHOT: &str = "Stratagems - The Helldivers Wiki.html";
+        let Ok(html) = std::fs::read_to_string(SNAPSHOT) else {
+            eprintln!("skip: 本地页面快照不存在（仅作结构参考）");
+            return;
+        };
+        let items =
+            parse_stratagems_html(&html).unwrap_or_else(|e| panic!("快照解析失败: {e}"));
+        assert!(items.len() > 100, "快照应解析出上百条战备，实际 {}", items.len());
+        let valid: HashSet<&str> = [
+            "Orbital Strikes", "Eagle Strikes", "Support Weapons", "Backpacks",
+            "Vehicles", "Sentries", "Emplacements", "Mission Stratagems",
+            "Objective", "Unavailable",
+        ]
+        .into_iter()
+        .collect();
+        let unknown: Vec<&String> = items
+            .iter()
+            .map(|i| &i.category)
+            .filter(|c| !valid.contains(c.as_str()))
+            .collect();
+        assert!(unknown.is_empty(), "存在未知分类: {unknown:?}");
+        assert!(items.iter().all(|i| !i.name.contains("(Wiki)")));
+        assert_eq!(items[0].category, "Orbital Strikes");
+        assert!(items.iter().any(|i| i.name == "Eagle Rearm" && i.category == "Mission Stratagems"));
+        assert!(items.iter().any(|i| i.name == "SEAF Artillery" && i.category == "Objective"));
+        assert!(items.iter().any(|i| i.name == "Orbital Illumination Flare" && i.category == "Unavailable"));
     }
 
     #[test]
@@ -1085,7 +1397,7 @@ mod tests {
         "#;
         let items = parse_stratagems_html(html).unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].name, "Test Strike (Wiki)");
+        assert_eq!(items[0].name, "Test Strike");
     }
 
     #[test]
@@ -1112,6 +1424,42 @@ mod tests {
         assert_eq!(category_name("Urban Legends"), "Emplacements");
         assert_eq!(category_name("Servants of Freedom"), "Backpacks");
         assert_eq!(category_name("unknown-id"), "unknown-id");
+    }
+
+    #[test]
+    fn icon_download_url_derives_images_link() {
+        // 页面 alt/src 直接是文件名 → /images/ 直链（空格 → 下划线）
+        let url = icon_download_url(
+            "Eagle Rearm",
+            "Eagle Rearm Stratagem Icon Background.svg",
+        );
+        assert_eq!(
+            url.as_deref(),
+            Some("https://helldivers.wiki.gg/images/Eagle_Rearm_Stratagem_Icon_Background.svg")
+        );
+        // 绝对 URL 原样返回
+        assert_eq!(
+            icon_download_url("X", "https://cdn.example.com/a%20b.png").as_deref(),
+            Some("https://cdn.example.com/a%20b.png")
+        );
+        // 协议相对 URL → 补 https
+        assert_eq!(
+            icon_download_url("X", "//img.example/x.png").as_deref(),
+            Some("https://img.example/x.png")
+        );
+        // hint 为空 → 名称惯例兜底
+        let fallback = icon_download_url("Reinforce", "");
+        assert_eq!(
+            fallback.as_deref(),
+            Some("https://helldivers.wiki.gg/images/Reinforce_Stratagem_Icon_Background.svg")
+        );
+    }
+
+    #[test]
+    fn file_path_encodes_like_mediawiki() {
+        assert_eq!(file_path("SOS Beacon Icon.svg"), "SOS_Beacon_Icon.svg");
+        assert_eq!(file_path("A\"B.svg"), "A%22B.svg");
+        assert_eq!(file_path("K-9 Rover.svg"), "K-9_Rover.svg");
     }
 
     #[test]

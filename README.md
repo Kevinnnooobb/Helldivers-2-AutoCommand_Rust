@@ -4,7 +4,7 @@
 
 > 绝地潜兵2 自动战备呼叫终端 — 沉浸式 HUD 风格桌面工具
 
-一个 Windows 桌面应用，通过模拟键盘输入一键呼叫轨道火力、飞鹰空袭、支援武器等 100+ 种战备。支持插件扩展、Wiki 数据自动拉取、分类编辑、Profile 管理。
+一个 Windows 桌面应用，通过模拟键盘输入一键呼叫轨道火力、飞鹰空袭、支援武器等 100+ 种战备。支持插件扩展、战备数据在线自动获取、分类编辑、Profile 管理。
 
 ---
 
@@ -15,8 +15,8 @@
 
 ## 功能
 
-- **战备数据库** — 75 条内置战备 + 插件扩展 + Wiki 自动拉取，覆盖 Orbital/Eagle/Support/Backpacks/Vehicles/Sentries/Emplacements/Mission 8 个功能分类
-- **点击式配装** — 10 个槽位，点击待命 + 战备库装入，自动推进下一空槽；插件/Wiki 战备也可装入
+- **战备数据库** — 75 条内置战备 + 插件扩展 + 在线自动获取，分类与顺序以 [helldivers.wiki.gg/wiki/Stratagems](https://helldivers.wiki.gg/wiki/Stratagems) 页面为准：Orbital/Eagle/Support/Backpacks/Vehicles/Sentries/Emplacements/Mission/Objective/Unavailable 10 个分类
+- **点击式配装** — 10 个槽位，点击待命 + 战备库装入，自动推进下一空槽；插件/自动获取战备也可装入
 - **分类筛选 + 搜索** — 侧边栏分类 Rail 切换类别，搜索框支持名称/型号子串实时过滤
 - **双击 / 热键执行** — 双击槽位或按全局热键，通过 `SendInput` API 注入方向键序列；支持预延迟（Ctrl→面板就绪）和可调按键间隔
 - **右键菜单** — 库行右键：装入/更改分类/编辑/删除；槽位右键：执行/清除/设热键
@@ -26,7 +26,7 @@
 - **双模式**
   - **主界面** (1100×640) — 完整战术终端：自定义标题栏、2×5 槽位网格、详情面板、战备库、日志栏
   - **紧凑模式** (554×56) — 无边框悬浮迷你条，始终置顶，点击图标即执行
-- **Wiki 数据拉取** — 一键从 [helldivers.wiki.gg/wiki/Stratagems](https://helldivers.wiki.gg/wiki/Stratagems) 页面的战备表格拉取最新数据（Name / Stratagem Code 列），自动差集比对，仅新增写入 `plugins/_wiki_new.json`；启动时自动检测缓存，支持一键清除
+- **战备数据在线获取** — 一键从 [helldivers.wiki.gg/wiki/Stratagems](https://helldivers.wiki.gg/wiki/Stratagems) 页面拉取最新战备表格（Name / Stratagem Code 列），自动差集比对，新增战备按页面分类直接入库（不再附加 New/Wiki 标签），缓存写入 `plugins/_wiki.json`；启动时自动检测缓存，支持一键清除
 - **插件系统** — JSON 文件放入 `plugins/` 即可扩展战备，启动时自动加载
 - **内置 UI 创建器** — 免手写 JSON：序列录制器（方向键/WASD 捕获）+ 战备录入（指令自动规范为 `up/down/left/right` 格式）
 - **按键设置** — 方向键映射（WASD / ESDF / 箭头）、激活键（支持 `lctrl`/`rctrl`/`lalt`/`ralt` 手动输入）、按键延迟 + 预延迟可调；槽位快捷键支持字母、数字、F1–F24 与 `,` `.` `/` 等标点
@@ -73,9 +73,9 @@ cargo build --release
 | **搜索战备** | 战备库顶部搜索框输入名称或型号 |
 | **修改分类** | 详情条分类名点击 → ComboBox 选已有或新建 |
 | **编辑战备** | 库行右键→设置 → 弹窗编辑图标/指令/描述 |
-| **删除战备** | 库行右键→删除（仅插件/Wiki 战备） |
+| **删除战备** | 库行右键→删除（仅插件/自动获取战备） |
 | **设置热键** | 右键槽位→设热键→按下目标按键→确认 |
-| **拉取 Wiki 数据** | 战备库头部🔍按钮（或创建器→📡拉取数据页签） |
+| **自动获取战备数据** | 战备库头部🔍按钮（或创建器→📡拉取数据页签） |
 | **创建插件** | 战备库头部💾按钮 → 创建器弹窗 |
 | **切换紧凑模式** | 标题栏▦按钮 |
 | **还原主界面** | 紧凑条右侧还原按钮 |
@@ -171,7 +171,7 @@ h2ac-rs/
 │   ├── executor.rs                  # SendInput（execute_command 核心）
 │   ├── hotkey.rs                    # WH_KEYBOARD_LL 全局钩子（显式生命周期 + 热更新）
 │   ├── plugin.rs                    # 插件扫描 / 加载 / 统一改写
-│   ├── wiki_fetcher.rs              # Wiki HTML 表格解析与异步拉取
+│   ├── wiki_fetcher.rs              # 页面 HTML 表格解析与在线异步拉取（本地快照仅作结构参考/测试）
 │   ├── icons.rs                     # IconStore（嵌入 + 磁盘兜底）
 │   ├── theme.rs                     # 设计系统
 │   ├── widgets.rs                   # HUD 组件库
@@ -200,7 +200,7 @@ cargo clippy --all-targets -- -W clippy::all    # 静态检查（当前 0 警告
 cargo build --release                           # 产物 target/release/h2ac-rs.exe
 ```
 
-测试覆盖：Wiki HTML 表格解析器（fixture 进仓库，不依赖外部文件；债券表不误解析）、方向转换契约、Config/Profile 序列化与值域校验、扫描码映射与别名、热键键名、指令文本解析、槽位推进状态机。
+测试覆盖：页面 HTML 表格解析器（details/summary 与 big/b 标签分类、fixture 进仓库不依赖外部文件、债券表不误解析；仓库根目录的本地页面快照存在时额外校验真实结构，但运行时不读取它）、方向转换契约、Config/Profile 序列化与值域校验、扫描码映射与别名、热键键名、指令文本解析、槽位推进状态机。
 
 ---
 
@@ -226,8 +226,9 @@ cargo build --release                           # 产物 target/release/h2ac-rs.
 - 内置 107 个图标已嵌入，新增 PNG 放 exe 旁 `assets/icons/` 即可
 
 **Q: 如何更新数据？**
-- 点击战备库头部🔍按钮 → 自动从 Wiki 拉取并差集比对
-- 新增战备写入 `plugins/_wiki_new.json`，下次启动自动加载；本次拉取全部命中内置时自动删除旧缓存
+- 点击战备库头部🔍按钮 → 自动从 [helldivers.wiki.gg/wiki/Stratagems](https://helldivers.wiki.gg/wiki/Stratagems) 在线拉取并差集比对
+- 新增战备按页面上的分类直接入库（不再附加 New/Wiki 标签），写入 `plugins/_wiki.json`，下次启动自动加载；本次拉取全部命中内置时自动删除旧缓存
+- 仓库根目录的本地页面快照仅作解析器结构参考与测试，绝不作为运行时数据源（避免过期数据）
 - 创建器 📡 页签可查看拉取进度，并在「已缓存」时一键清除缓存
 
 ## 致谢
