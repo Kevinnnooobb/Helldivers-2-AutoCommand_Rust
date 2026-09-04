@@ -70,7 +70,7 @@ pub fn render_detail(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) 
                                 cat_sel = cat.clone();
                             }
                         }
-                        if ui.button(egui::RichText::new("✚ 新建分类").font(m.hud(12.0))).clicked() {
+                        if ui.button(egui::RichText::new("新建分类").font(m.hud(12.0))).clicked() {
                             cat_sel = String::new();
                         }
                     });
@@ -86,7 +86,7 @@ pub fn render_detail(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) 
                     }
                 }
                 if orig_cat != def_cat {
-                    ui.label(egui::RichText::new("✎").font(m.hud(9.0)).color(GOLD_DIM));
+                    ui.label(egui::RichText::new("已改").font(m.hud(9.0)).color(GOLD_DIM));
                 }
             });
 

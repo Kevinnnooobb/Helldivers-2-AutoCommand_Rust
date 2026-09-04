@@ -49,7 +49,7 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(*dir).font(m.hud(14.0)).color(GOLD_MID));
                         let v = app.settings_bindings.entry(dir.to_string()).or_default();
-                        if hud_button(ui, "🎬", Vec2::new(32.0, 24.0), m, GOLD_MID, false).clicked() {
+                        if hud_button(ui, "捕获", Vec2::new(40.0, 24.0), m, GOLD_MID, false).clicked() {
                             app.capture.settings_capture = Some(dir.to_string());
                             app.capture.captured.clear();
                             app.capture.capturing = None;
@@ -60,7 +60,7 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("激活键:").font(m.hud(13.0)));
-                    if hud_button(ui, "🎬", Vec2::new(32.0, 24.0), m, GOLD_MID, false).clicked() {
+                    if hud_button(ui, "捕获", Vec2::new(40.0, 24.0), m, GOLD_MID, false).clicked() {
                         app.capture.settings_capture = Some("stratagem".into());
                         app.capture.captured.clear();
                         app.capture.capturing = None;
@@ -70,7 +70,7 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("监听开关:").font(m.hud(13.0)));
-                    if hud_button(ui, "🎬", Vec2::new(32.0, 24.0), m, GOLD_MID, false).clicked() {
+                    if hud_button(ui, "捕获", Vec2::new(40.0, 24.0), m, GOLD_MID, false).clicked() {
                         app.capture.settings_capture = Some("listen".into());
                         app.capture.captured.clear();
                         app.capture.capturing = None;

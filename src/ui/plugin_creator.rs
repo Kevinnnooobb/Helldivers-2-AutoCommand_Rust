@@ -63,12 +63,12 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                 ui.horizontal(|ui| {
                     let tab_fetch = ui.selectable_label(
                         app.creator.tab == CreatorTab::Fetch,
-                        egui::RichText::new("📡 拉取数据").font(m.hud(13.0)),
+                        egui::RichText::new("拉取数据").font(m.hud(13.0)),
                     );
                     if tab_fetch.clicked() { app.creator.tab = CreatorTab::Fetch; }
                     let tab_create = ui.selectable_label(
                         app.creator.tab == CreatorTab::Create,
-                        egui::RichText::new("🛠 创建战备").font(m.hud(13.0)),
+                        egui::RichText::new("创建战备").font(m.hud(13.0)),
                     );
                     if tab_create.clicked() { app.creator.tab = CreatorTab::Create; }
                 });
@@ -107,9 +107,9 @@ pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
         ui.label(egui::RichText::new(&app.wiki.fetch_status).font(m.hud(13.0)).color(TEXT_SUB));
         ui.add_space(4.0);
         let spinner = if app.wiki.fetch_rx.is_some() {
-            "⟳ 拉取中…"
+            "拉取中…"
         } else {
-            "⟳ 正在补齐缺失图标…"
+            "正在补齐缺失图标…"
         };
         ui.label(egui::RichText::new(spinner).font(m.hud(13.0)).color(GOLD));
     } else {
@@ -169,7 +169,7 @@ pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
                 app.creator.sequence_recording = false;
             }
         } else {
-            if hud_button(ui, "🎬 录制", Vec2::new(80.0, 26.0), m, GOLD, false).clicked() {
+            if hud_button(ui, "录制", Vec2::new(80.0, 26.0), m, GOLD, false).clicked() {
                 app.creator.sequence_recording = true;
                 app.creator.stratagem_sequence.clear();
             }
@@ -198,7 +198,7 @@ pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("{}. {} [{}] ({})", i+1, name, seq.join(""), icon))
                 .font(m.hud(11.0)).color(TEXT_SUB));
-            if hud_button(ui, "✕", Vec2::new(22.0, 20.0), m, DANGER, true).clicked() {
+            if hud_button(ui, "×", Vec2::new(22.0, 20.0), m, DANGER, true).clicked() {
                 remove_idx = Some(i);
             }
         });
