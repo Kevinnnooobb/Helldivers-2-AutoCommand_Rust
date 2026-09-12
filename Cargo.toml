@@ -13,6 +13,21 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 resvg = "0.45"
 usvg = "0.45"
 tiny-skia = "0.11"
+# ── plan7 Step 3：参考实现原文（hd2-preset-helper 0.1.4）所需依赖 ──
+# 本环境 cargo 无法访问 crates.io（schannel SEC_E_NO_CREDENTIALS，镜像同样不通），
+# 只能使用 ~/.cargo/registry 缓存中已有的 crate，故版本以缓存为准（见 plan7 §12）。
+# 已具备（本步加入；half/tracing 已在 Cargo.lock 中，无需新解包）：
+half = "2.7.1"
+tracing = { version = "0.1.44", features = ["release_max_level_info"] }
+# 尚缺：本机 cargo 离线且沙箱不允许写 ~/.cargo/registry/src，新 crate 无法解包。
+# 必须先解决（见 plan7 §12）：
+#   anyhow = "1.0.103"           （缓存与索引均有，校验一致，但解包需写 ~/.cargo）
+#   rayon = "1.12.0"             （vision/classifier.rs、vision/geometry.rs 并行打分；无任何缓存）
+#   rust-embed = "8.12.0"        （assets.rs 资产嵌入；无任何缓存）
+#   fast_image_resize = "6.1.0"  （assets.rs、vision/geometry.rs 缩放；无任何缓存）
+# 注：windows crate 仍为 0.58（参考是 0.62.2，本机缓存最高 0.61.3）——升级时机见 plan7 §5.5：
+# 同一 crate 内 `use windows::…` 只能解析到一个版本，故必须全 crate 升级，
+# 且要等 loadout_sync 的 Win32/DXGI 适配层归档后（否则要为待删代码做迁移）。
 windows = { version = "0.58", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
