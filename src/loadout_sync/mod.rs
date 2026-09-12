@@ -16,6 +16,8 @@
 // 原文取代并整体归档，故此处只做模块级豁免，不为即将删除的代码做逐点改写。
 #![allow(unsafe_op_in_unsafe_fn)]
 pub mod capture;
+/// S1 适配层：H2AC 图标键 ↔ 参考目录 `item_id`（参考实现没有这一层）。
+pub mod catalog_bridge;
 pub mod config;
 pub mod controller;
 /// 参考实现（`hd2-preset-helper-0.1.4`）的确定性装配状态机迁移层。

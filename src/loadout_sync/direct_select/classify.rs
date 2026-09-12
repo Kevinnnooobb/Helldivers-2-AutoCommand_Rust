@@ -25,11 +25,12 @@
 //! `TemplateClassifier`（961 行，像素层灰度/梯度相关）**尚未迁移**；
 //! 在那之前，本适配层让新状态机能真正跑起来，同时**不改变**既有的打分实现
 //! （不引入未经真实帧验证的阈值）。
+use crate::assets::IconCatalog;
+use crate::loadout_sync::catalog_bridge;
 use crate::loadout_sync::matcher::{CellKind, IconMatcher};
 use crate::loadout_sync::reference_vision::{Classification, ItemKind};
 use crate::loadout_sync::selection::LoadoutItem;
 use crate::loadout_sync::types::ImageRect;
-use crate::vision::reference_catalog::{IconCatalog, ItemKind as CatalogItemKind};
 
 /// 图标键 → 目录 ID 的桥。
 pub struct CatalogClassifier {
@@ -51,13 +52,15 @@ impl CatalogClassifier {
         let keys = crate::icons::all_icon_keys();
         let mut resolved: Vec<(String, String)> = Vec::new();
         let mut unresolved: Vec<String> = Vec::new();
-        for entry in catalog
-            .by_kind(CatalogItemKind::Stratagem)
-            .chain(catalog.by_kind(CatalogItemKind::Booster))
-        {
-            match catalog.resolve_current_key(&entry.item_id, &keys) {
-                Some(key) => resolved.push((entry.item_id.clone(), key.to_string())),
-                None => unresolved.push(entry.item_id.clone()),
+        // 目录条目按 item_id 升序（参考目录内部是 HashMap，迭代顺序不稳定；
+        // `resolved` / `items` 是平行数组且打分并列时按下标决胜，顺序必须确定）。
+        let entries = catalog_bridge::entries_of_kind(&catalog, ItemKind::Stratagem)
+            .into_iter()
+            .chain(catalog_bridge::entries_of_kind(&catalog, ItemKind::Booster));
+        for (item_id, _entry) in entries {
+            match catalog_bridge::resolve_current_key(&catalog, item_id, &keys) {
+                Some(key) => resolved.push((item_id.to_string(), key.to_string())),
+                None => unresolved.push(item_id.to_string()),
             }
         }
         let items: Vec<LoadoutItem> = resolved
@@ -89,10 +92,10 @@ impl CatalogClassifier {
     /// 只在**双向都能解析**时返回：必须也在 `resolved` 表里，
     /// 否则会出现「目标认得出来但选不中」的不一致。
     pub fn catalog_id_for_icon(&self, icon_key: &str) -> Option<&str> {
-        let item_id = self.catalog.resolve_item_id(icon_key)?;
+        let item_id = catalog_bridge::resolve_item_id(&self.catalog, icon_key)?;
         self.resolved
             .iter()
-            .any(|(resolved_id, _)| resolved_id == item_id)
+            .any(|(resolved_id, _)| resolved_id.as_str() == item_id)
             .then_some(item_id)
     }
 

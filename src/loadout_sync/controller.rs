@@ -28,7 +28,7 @@ use crate::loadout_sync::state::{
     log_line, status_from_error, LoadoutSyncShared, SyncEvent, SyncLogLevel, SyncStatus,
 };
 use crate::loadout_sync::types::{Calibration, GameWindowInfo};
-use crate::vision::reference_catalog::IconCatalog;
+use crate::assets::IconCatalog;
 
 // ─── 状态 ───
 
@@ -149,9 +149,6 @@ pub struct SyncJob {
     pub selection: LoadoutSyncSelection,
     pub params: LoadoutSyncConfig,
     pub calibration: Calibration,
-    /// 视觉管线配置（供 `vision` CLI 探针复用同一份配置；装配路径不再读取它）。
-    #[allow(dead_code)]
-    pub vision: crate::vision::config::VisionConfig,
     pub debug_screenshots: bool,
 }
 
@@ -321,14 +318,13 @@ impl Machine {
         let win = self.window.ok_or(LoadoutSyncError::GameNotFound)?;
 
         // ── 目录 → 分类器 ──
-        let root = crate::vision::reference_catalog::default_root();
+        // 目录来自参考 `assets.rs` 的内嵌资产（assets/reference/icons）：
+        // 资产缺失在**编译期**就会失败，运行期不再有"磁盘目录缺失"这一分支。
         let t0 = Instant::now();
-        let catalog = IconCatalog::load(&root).map_err(|e| LoadoutSyncError::UnexpectedState {
-            detail: format!(
-                "参考图标目录加载失败（{}）: {}",
-                root.display(),
-                e.message()
-            ),
+        let catalog = IconCatalog::load(crate::assets::default_icon_manifest()).map_err(|e| {
+            LoadoutSyncError::UnexpectedState {
+                detail: format!("参考图标目录加载失败（内嵌 assets/reference/icons）: {e:#}"),
+            }
         })?;
         let load_ms = t0.elapsed().as_millis();
         let classifier = CatalogClassifier::load(catalog);

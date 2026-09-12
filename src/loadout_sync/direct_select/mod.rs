@@ -41,5 +41,3 @@ pub mod real_io;
 pub mod replay;
 pub mod selection_verify;
 pub mod session;
-#[cfg(test)]
-pub mod zncc_spike;

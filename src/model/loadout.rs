@@ -63,7 +63,6 @@ impl H2ACApp {
             selection,
             params: cfg.clone(),
             calibration: Calibration::default(),
-            vision: self.model.config.vision.clone(),
             debug_screenshots: cfg.debug_screenshots || cfg.debug_overlay || self.model.debug_mode,
         };
         let started = self.model.loadout_sync.start(move |shared, tx| {

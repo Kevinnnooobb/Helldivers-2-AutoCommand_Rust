@@ -762,14 +762,6 @@ impl eframe::App for H2ACApp {
 }
 
 fn main() -> Result<(), eframe::Error> {
-    // 视觉识别 CLI（vision-debug / vision-dataset / vision-eval）：
-    // 命中即执行并退出，不启动 GUI（需求 §37）。
-    {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        if let Some(code) = crate::vision::cli::dispatch(&args) {
-            std::process::exit(code);
-        }
-    }
     std::panic::set_hook(Box::new(|info| {
         let bt = std::backtrace::Backtrace::force_capture();
         let msg = format!("PANIC: {info}\n{bt}\n");

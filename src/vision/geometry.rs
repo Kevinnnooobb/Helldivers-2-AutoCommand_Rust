@@ -1,354 +1,849 @@
-// 几何检测 —— 参考实现 hd2-preset-helper 的「固定锚点 + 边线响应验证」口径。
-//
-// 与旧自适应搜索的区别（这是本次几何重写的核心）：
-//   * 候选位置**固定**：列由标定给出（home 11/124/237/350、列表 77/190/304/417），
-//     行只在标定的 y 区间内逐像素打分 —— 不做盲搜、不做逐格吸附；
-//   * 每个候选位置都要**验证**：用积分图上的「三带亮度窗口」在上下左右四条边测响应，
-//     再乘上边框一致性系数（36 段亮度的相对离散度），分数不达标直接判为无效候选；
-//   * 列表行用 DP 在「最小行距」硬约束下整体最优（不是逐行贪心，也不会被分类标题顶歪）。
-//
-// 坐标系：全部计算都在 **canonical ROI**（默认 576×832）上进行，
-// 检测结果直接就是 ROI 参考坐标，再由 `FrameGeometry::roi_rect` 映射到帧像素。
+use std::time::Instant;
+
+use anyhow::{Result, bail};
+use fast_image_resize as fir;
+use fir::{ResizeAlg, ResizeOptions, Resizer};
 use image::{GrayImage, RgbaImage};
+use rayon::prelude::*;
+use tracing::debug;
 
-use crate::loadout_sync::types::ImageRect;
+use crate::image_rect::ImageRect;
+use crate::item::ItemKind;
+use crate::vision::color;
 
-use super::config::{GeometryConfig, SegmentationConfig};
-use super::segment::chroma_likeness;
+use super::{
+    HOME_BOOSTER_X, HOME_COLS, LIST_COLS, ROI_REFERENCE_H, ROI_REFERENCE_H_F32, ROI_REFERENCE_W,
+    ROI_REFERENCE_W_F32, SLOT_SIZE_I32, Slot, SlotKind, SlotLayout,
+};
 
-/// 检测出来的槽位类别。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetectedKind {
-    Stratagem,
-    Booster,
+// Window sizes for the three-band luma edge response.
+const H_WIN: i32 = 48;
+const H_LINE_H: i32 = 3;
+const H_SIDE_H: i32 = 7;
+const V_WIN: i32 = 48;
+const V_LINE_W: i32 = 3;
+const V_SIDE_W: i32 = 7;
+const Z_EPS: f32 = 0.12;
+
+const H_RESPONSE_THR: f32 = 0.18;
+const V_RESPONSE_THR: f32 = 0.16;
+const H_RESPONSE_HI: f32 = 0.75;
+const V_RESPONSE_HI: f32 = 0.70;
+
+// Candidate x/y are fixed slot anchors. Each edge is measured with a small
+// thickness band rather than shifting the edge to maximize its response.
+// Horizontal edges prefer the theoretical center pixel and use the strongest
+// adjacent pixel only as thickness / sampling support. Vertical edges retain the
+// more tolerant top-k reduction because column x is not scanned independently.
+const EDGE_BAND: i32 = 1;
+const H_EDGE_CENTER_WEIGHT: f32 = 2.0;
+const EDGE_BAND_TOPK: usize = 2;
+const SEGMENT_BINS: usize = 10;
+const V_SEGMENT_SKIP_CENTER_BINS: usize = 2;
+
+const H_SEGMENT_SAMPLE_STEP: i32 = 1;
+const SEGMENT_MIN_BIN_SCORE: f32 = 0.22;
+
+const MIN_SLOT_SCORE: f32 = 0.26;
+const MIN_HORIZONTAL_EDGE: f32 = 0.24;
+const MIN_SIDE: f32 = 0.16;
+
+// Robust frame-luma consistency. A slot contributes 36 border segments:
+// ten each on top/bottom and eight each on the intentionally gapped sides.
+const BORDER_SEGMENTS: usize = 4 * SEGMENT_BINS - 2 * V_SEGMENT_SKIP_CENTER_BINS;
+const BORDER_UNIFORMITY_TRIM: usize = 8;
+const BORDER_UNIFORMITY_RETAINED: usize = BORDER_SEGMENTS - BORDER_UNIFORMITY_TRIM;
+const BORDER_UNIFORMITY_LUMA_FLOOR: f32 = 0.08;
+const BORDER_UNIFORMITY_GOOD: f32 = 0.10;
+const BORDER_UNIFORMITY_BAD: f32 = 0.30;
+const BORDER_UNIFORMITY_MAX_PENALTY: f32 = 0.60;
+
+// Slot score weights: emphasize top/bottom pairing so a single strong line
+// cannot dominate a slot score.
+const TB_MIN_WEIGHT: f32 = 0.55;
+const TB_MEAN_WEIGHT: f32 = 0.25;
+const SIDE_MEAN_WEIGHT: f32 = 0.15;
+const SIDE_BEST_WEIGHT: f32 = 0.05;
+
+const ROW_THRESHOLD: f32 = 0.16;
+// Empty home slots have a nearly uniform center. Relative variation keeps the
+// filled check stable across global SDR/HDR brightness changes.
+const HOME_CONTENT_INSET: i32 = 19;
+const HOME_CONTENT_MEAN_FLOOR: f32 = 0.08;
+const HOME_CONTENT_MIN_RELATIVE_STD: f32 = 0.15;
+
+// Use the central 90% of the calibrated home-booster hex to avoid its border.
+const BOOSTER_HEX_CENTER_X: f32 = 0.5000;
+const BOOSTER_HEX_CENTER_Y: f32 = 0.5048;
+const BOOSTER_CONTENT_SIDE_LEN: f32 = 0.4250 * 0.90;
+const HOME_BOOSTER_MIN_YELLOW_RATIO: f32 = 0.40;
+const ROW_MIN_DIST: i32 = 113;
+
+// Detection runs in the canonical ROI coordinate system. Input ROIs with the
+// same aspect ratio are normalized before scoring, then boxes are mapped back to
+// source coordinates.
+
+#[derive(Clone, Copy)]
+struct Profile {
+    cols: [i32; 4],
+    y_min: i32,
+    y_max: i32,
+    max_rows: usize,
+    min_slots: usize,
 }
 
-impl DetectedKind {
-    /// 仅测试与诊断使用的别名（等价于 `SlotKind::is_booster`）。
-    #[cfg(test)]
-    pub fn is_booster(self) -> bool {
-        matches!(self, Self::Booster)
-    }
+const LIST_PROFILE: Profile = Profile {
+    cols: LIST_COLS,
+    y_min: 120,
+    y_max: 700,
+    max_rows: 10,
+    min_slots: 1,
+};
+const HOME_PROFILE: Profile = Profile {
+    cols: HOME_COLS,
+    y_min: 620,
+    y_max: 652,
+    max_rows: 1,
+    min_slots: HOME_COLS.len(),
+};
+
+#[derive(Clone)]
+struct SlotCandidate {
+    x: i32,
+    col: u32,
 }
 
-/// 一个通过验证的槽位（坐标为 ROI 参考像素）。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DetectedSlot {
-    pub row: u32,
-    pub col: u32,
-    pub kind: DetectedKind,
-    pub rect: ImageRect,
-    /// 边线响应 × 边框一致性（0~1）
-    pub score: f32,
-    /// 内容检查结果（home 用：中心区域相对标准差是否达到「有内容」门槛）。
-    /// 只作为交叉验证信息，最终空/非空由分割层决定。
-    pub content: bool,
+#[derive(Clone)]
+struct RowCandidate {
+    y: i32,
+    score: f32,
+    slots: Vec<SlotCandidate>,
 }
 
-/// 一次几何检测的结果。
-#[derive(Debug, Clone, PartialEq)]
-pub struct GeometryDetection {
-    /// 是否检测到 home 版面
-    pub home: bool,
-    /// 通过验证的行数（0 = 未通过验证）
-    pub rows: usize,
-    pub cols: u32,
-    pub slots: Vec<DetectedSlot>,
-    /// 最强行分数（日志与阈值诊断用）
-    pub best_row_score: f32,
+struct ProfileLookup {
+    h_lines: Vec<LineScores>,
+    h_x_to_index: Vec<Option<usize>>,
+    v_x_to_index: Vec<Option<usize>>,
+    v_lines: Vec<LineScores>,
 }
 
-impl GeometryDetection {
-    pub fn verified(&self) -> bool {
-        self.rows > 0 && !self.slots.is_empty()
-    }
-
-    /// Booster 槽（仅测试与诊断使用）。
-    #[cfg(test)]
-    pub fn booster(&self) -> Option<&DetectedSlot> {
-        self.slots.iter().find(|s| s.kind.is_booster())
-    }
-
-    pub fn empty(cols: u32) -> Self {
-        Self {
-            home: false,
-            rows: 0,
-            cols,
-            slots: Vec::new(),
-            best_row_score: 0.0,
-        }
-    }
+struct LineScores {
+    pos: i32,
+    start: i32,
+    scores: Vec<f32>,
 }
 
-/// home 版面：固定 4 列 + Booster（参考实现 `detect_home`）。
-pub fn detect_home(
-    roi: &RgbaImage,
-    cfg: &GeometryConfig,
-    seg: &SegmentationConfig,
-) -> GeometryDetection {
-    let canonical = canonical_rgba(roi, cfg);
-    let luma = luma_of(&canonical);
-    let integral = IntegralImage::from_luma(&luma);
-    let profile = Profile {
-        cols: cfg.home_cols.to_vec(),
-        y_min: cfg.home_y_min,
-        y_max: cfg.home_y_max,
-        max_rows: cfg.home_max_rows,
-        min_slots: cfg.home_min_slots,
-    };
-    let lookup = ProfileLookup::new(&integral, &profile, cfg);
-    let rows = scan_profile(&lookup, &integral, &profile, cfg);
-    let Some(row) = rows.first() else {
-        return GeometryDetection::empty(cfg.home_cols.len() as u32);
-    };
-    if row.slots.len() < cfg.home_min_slots {
-        return GeometryDetection::empty(cfg.home_cols.len() as u32);
-    }
-
-    let mut slots: Vec<DetectedSlot> = row
-        .slots
-        .iter()
-        .map(|candidate| DetectedSlot {
-            row: 0,
-            col: candidate.col,
-            kind: DetectedKind::Stratagem,
-            rect: slot_rect(cfg.home_cols[candidate.col as usize], row.y, cfg),
-            score: candidate.score,
-            content: slot_has_content(&integral, candidate.x, row.y, cfg),
-        })
-        .collect();
-
-    // Booster：位置固定（参考实现 HOME_BOOSTER_X），类别由黄色占比决定
-    let booster_rect = slot_rect(cfg.home_booster_x, row.y, cfg);
-    let booster_score = score_slot(&lookup, &integral, cfg.home_booster_x, row.y, cfg)
-        .map(|s| s.score)
-        .unwrap_or(0.0);
-    slots.push(DetectedSlot {
-        row: 0,
-        col: slots.len() as u32,
-        kind: DetectedKind::Booster,
-        rect: booster_rect,
-        score: booster_score,
-        content: booster_has_content(&canonical, booster_rect, cfg, seg),
-    });
-
-    GeometryDetection {
-        home: true,
-        rows: 1,
-        cols: cfg.home_cols.len() as u32,
-        slots,
-        best_row_score: row.score,
-    }
-}
-
-/// 列表版面：固定 4 列 + DP 选出的可见行（参考实现 `detect_list`）。
-pub fn detect_list(roi: &RgbaImage, cfg: &GeometryConfig) -> GeometryDetection {
-    let canonical = canonical_rgba(roi, cfg);
-    let luma = luma_of(&canonical);
-    let integral = IntegralImage::from_luma(&luma);
-    let profile = Profile {
-        cols: cfg.list_cols.to_vec(),
-        y_min: cfg.list_y_min,
-        y_max: cfg.list_y_max,
-        max_rows: cfg.list_max_rows,
-        min_slots: cfg.list_min_slots,
-    };
-    let lookup = ProfileLookup::new(&integral, &profile, cfg);
-    let rows = scan_profile(&lookup, &integral, &profile, cfg);
-    if rows.is_empty() {
-        return GeometryDetection::empty(cfg.list_cols.len() as u32);
-    }
-
-    let mut slots = Vec::new();
-    for (row_index, row) in rows.iter().enumerate() {
-        for candidate in &row.slots {
-            slots.push(DetectedSlot {
-                row: row_index as u32,
-                col: candidate.col,
-                kind: DetectedKind::Stratagem,
-                rect: slot_rect(cfg.list_cols[candidate.col as usize], row.y, cfg),
-                score: candidate.score,
-                content: true,
-            });
-        }
-    }
-    GeometryDetection {
-        home: false,
-        rows: rows.len(),
-        cols: cfg.list_cols.len() as u32,
-        best_row_score: rows.iter().map(|r| r.score).fold(0.0, f32::max),
-        slots,
-    }
-}
-
-/// Booster 自身是否已装备（黄色占比，参考实现口径）。
-pub fn booster_has_content(
-    canonical: &RgbaImage,
-    rect: ImageRect,
-    cfg: &GeometryConfig,
-    seg: &SegmentationConfig,
-) -> bool {
-    let mut yellow = 0u32;
-    let mut mask_pixels = 0u32;
-    for local_y in 0..rect.h {
-        for local_x in booster_hex_row_span(local_y, rect.w, rect.h, cfg) {
-            let x = rect.x + local_x;
-            let y = rect.y + local_y;
-            if x < 0 || y < 0 || x >= canonical.width() as i32 || y >= canonical.height() as i32 {
-                continue;
-            }
-            mask_pixels += 1;
-            let p = canonical.get_pixel(x as u32, y as u32).0;
-            if chroma_likeness(p[0], p[1], p[2], &seg.booster_yellow)
-                >= seg.booster_yellow.min_likeness
-            {
-                yellow += 1;
-            }
-        }
-    }
-    mask_pixels > 0 && yellow as f32 >= mask_pixels as f32 * cfg.booster_min_yellow_ratio
-}
-
-/// 六边形内容区在给定行上的水平跨度（参考实现 `booster_hex_row_span`）。
-fn booster_hex_row_span(
-    local_y: i32,
-    width: i32,
-    height: i32,
-    cfg: &GeometryConfig,
-) -> std::ops::Range<i32> {
-    const SQRT_3: f32 = 1.732_050_8;
-    let y = (local_y as f32 + 0.5) / height.max(1) as f32;
-    let dy = (y - cfg.booster_hex_center_y).abs();
-    if dy > 0.5 * SQRT_3 * cfg.booster_content_side_len {
-        return 0..0;
-    }
-    let half_width = cfg.booster_content_side_len - dy / SQRT_3;
-    let width_f = width as f32;
-    let left = ((cfg.booster_hex_center_x - half_width) * width_f)
-        .floor()
-        .clamp(0.0, width_f) as i32;
-    let right = ((cfg.booster_hex_center_x + half_width) * width_f)
-        .ceil()
-        .clamp(0.0, width_f) as i32;
-    left..right
-}
-
-/// 参考坐标槽位矩形（canonical ROI 坐标）。
-fn slot_rect(x: i32, y: i32, cfg: &GeometryConfig) -> ImageRect {
-    ImageRect::new(x, y, cfg.slot_size, cfg.slot_size)
-}
-
-// ─── canonical 化 ───
-
-/// 把 ROI 图像缩放到 canonical 尺寸（等价于参考实现的「canonical luma」）。
-///
-/// 缩小用面积平均（避免混叠），放大用双线性；参考实现用 Lanczos3，
-/// 这里不引入 fast_image_resize：面积/双线性在这两个尺度上的差异远小于阈值间隔。
-pub fn canonical_rgba(roi: &RgbaImage, cfg: &GeometryConfig) -> RgbaImage {
-    let (dw, dh) = (cfg.canonical_w.max(1), cfg.canonical_h.max(1));
-    let (sw, sh) = (roi.width(), roi.height());
-    if sw == dw && sh == dh {
-        return roi.clone();
-    }
-    if sw == 0 || sh == 0 {
-        return RgbaImage::new(dw, dh);
-    }
-    let scale_x = sw as f32 / dw as f32;
-    let scale_y = sh as f32 / dh as f32;
-    let mut out = RgbaImage::new(dw, dh);
-    if scale_x >= 1.0 && scale_y >= 1.0 {
-        for y in 0..dh {
-            for x in 0..dw {
-                let x0 = x as f32 * scale_x;
-                let x1 = (x + 1) as f32 * scale_x;
-                let y0 = y as f32 * scale_y;
-                let y1 = (y + 1) as f32 * scale_y;
-                let ix0 = x0.floor().max(0.0) as u32;
-                let ix1 = (x1.ceil() as u32).min(sw);
-                let iy0 = y0.floor().max(0.0) as u32;
-                let iy1 = (y1.ceil() as u32).min(sh);
-                let mut acc = [0.0f32; 4];
-                let mut weight_sum = 0.0f32;
-                for sy in iy0..iy1.max(iy0 + 1).min(sh) {
-                    let wy = ((sy as f32 + 1.0).min(y1) - (sy as f32).max(y0)).max(0.0);
-                    for sx in ix0..ix1.max(ix0 + 1).min(sw) {
-                        let wx = ((sx as f32 + 1.0).min(x1) - (sx as f32).max(x0)).max(0.0);
-                        let w = wx * wy;
-                        if w <= 0.0 {
-                            continue;
-                        }
-                        let p = roi.get_pixel(sx, sy).0;
-                        for c in 0..4 {
-                            acc[c] += p[c] as f32 * w;
-                        }
-                        weight_sum += w;
-                    }
-                }
-                let weight_sum = weight_sum.max(1e-6);
-                out.put_pixel(
-                    x,
-                    y,
-                    image::Rgba([
-                        (acc[0] / weight_sum).round().clamp(0.0, 255.0) as u8,
-                        (acc[1] / weight_sum).round().clamp(0.0, 255.0) as u8,
-                        (acc[2] / weight_sum).round().clamp(0.0, 255.0) as u8,
-                        (acc[3] / weight_sum).round().clamp(0.0, 255.0) as u8,
-                    ]),
-                );
-            }
-        }
-        return out;
-    }
-
-    // 放大：双线性
-    for y in 0..dh {
-        for x in 0..dw {
-            let sx = ((x as f32 + 0.5) * scale_x - 0.5).clamp(0.0, sw as f32 - 1.0);
-            let sy = ((y as f32 + 0.5) * scale_y - 0.5).clamp(0.0, sh as f32 - 1.0);
-            let x0 = sx.floor() as u32;
-            let y0 = sy.floor() as u32;
-            let x1 = (x0 + 1).min(sw - 1);
-            let y1 = (y0 + 1).min(sh - 1);
-            let fx = sx - x0 as f32;
-            let fy = sy - y0 as f32;
-            let p00 = roi.get_pixel(x0, y0).0;
-            let p10 = roi.get_pixel(x1, y0).0;
-            let p01 = roi.get_pixel(x0, y1).0;
-            let p11 = roi.get_pixel(x1, y1).0;
-            let mut px = [0u8; 4];
-            for c in 0..4 {
-                let top = p00[c] as f32 * (1.0 - fx) + p10[c] as f32 * fx;
-                let bottom = p01[c] as f32 * (1.0 - fx) + p11[c] as f32 * fx;
-                px[c] = (top * (1.0 - fy) + bottom * fy).round().clamp(0.0, 255.0) as u8;
-            }
-            out.put_pixel(x, y, image::Rgba(px));
-        }
-    }
-    out
-}
-
-/// 灰度图（luma601，0~255）。
-pub fn luma_of(rgba: &RgbaImage) -> GrayImage {
-    let mut out = GrayImage::new(rgba.width(), rgba.height());
-    for y in 0..rgba.height() {
-        for x in 0..rgba.width() {
-            let p = rgba.get_pixel(x, y).0;
-            let luma =
-                ((77u32 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32 + 128) >> 8) as u8;
-            out.put_pixel(x, y, image::Luma([luma]));
-        }
-    }
-    out
-}
-
-// ─── 积分图 ───
-
-/// 归一化亮度（0~1）积分图 + 平方积分图（用于局部标准差）。
 struct IntegralImage {
     width: usize,
     height: usize,
     sum: Vec<f32>,
     sum_sq: Vec<f32>,
+}
+
+pub fn detect(screenshot: &RgbaImage, expected_layout: SlotLayout) -> Result<Vec<Slot>> {
+    if screenshot.width() == 0 || screenshot.height() == 0 {
+        bail!("cannot run geometry detector on an empty image");
+    }
+
+    let started = Instant::now();
+    let luma = luma_canonical(screenshot)?;
+    let luma_time = started.elapsed();
+    let integral = IntegralImage::from_luma(&luma);
+    let integral_time = started.elapsed() - luma_time;
+
+    let detections = match expected_layout {
+        SlotLayout::Home => detect_home(screenshot, &integral),
+        SlotLayout::List(item_kind) => detect_list(
+            screenshot.width(),
+            screenshot.height(),
+            &integral,
+            item_kind,
+        ),
+    };
+
+    debug!(
+        target: "hd2_preset_helper::perf",
+        ?expected_layout,
+        luma = ?luma_time,
+        integral = ?integral_time,
+        total = ?started.elapsed(),
+        detections = detections.len(),
+        "geometry detector timing"
+    );
+    Ok(detections)
+}
+
+fn detect_home(rgba: &RgbaImage, integral: &IntegralImage) -> Vec<Slot> {
+    let lookup = ProfileLookup::new(integral, &HOME_PROFILE);
+    let rows = scan_profile(&lookup, integral, HOME_PROFILE);
+    home_rows_to_slots(rgba, integral, &rows)
+}
+
+fn detect_list(
+    image_w: u32,
+    image_h: u32,
+    integral: &IntegralImage,
+    item_kind: ItemKind,
+) -> Vec<Slot> {
+    let lookup = ProfileLookup::new(integral, &LIST_PROFILE);
+    let rows = scan_profile(&lookup, integral, LIST_PROFILE);
+    match item_kind {
+        ItemKind::Booster => booster_list_rows_to_slots(image_w, image_h, &LIST_PROFILE, &rows),
+        ItemKind::Stratagem => {
+            rows_to_slots_by(image_w, image_h, &rows, |_, _| SlotKind::Stratagem)
+        }
+    }
+}
+
+fn home_rows_to_slots(
+    rgba: &RgbaImage,
+    integral: &IntegralImage,
+    rows: &[RowCandidate],
+) -> Vec<Slot> {
+    let Some(row) = rows.first() else {
+        return Vec::new();
+    };
+
+    let mut slots: Vec<Slot> = row
+        .slots
+        .iter()
+        .map(|candidate| {
+            let kind = if slot_has_content(integral, candidate.x, row.y) {
+                SlotKind::Stratagem
+            } else {
+                SlotKind::StratagemEmpty
+            };
+            slot_from_rect(
+                slot_rect(rgba.width(), rgba.height(), candidate.x, row.y),
+                0,
+                candidate.col,
+                kind,
+            )
+        })
+        .collect();
+
+    if slots.len() != HOME_COLS.len() {
+        return Vec::new();
+    }
+
+    let rect = slot_rect(rgba.width(), rgba.height(), HOME_BOOSTER_X, row.y);
+    slots.push(slot_from_rect(
+        rect,
+        0,
+        HOME_COLS.len() as u32,
+        home_booster_kind(rgba, rect),
+    ));
+
+    slots
+}
+
+fn booster_list_rows_to_slots(
+    image_w: u32,
+    image_h: u32,
+    profile: &Profile,
+    rows: &[RowCandidate],
+) -> Vec<Slot> {
+    let first_row_y_max = profile.y_min + ROW_MIN_DIST;
+    rows_to_slots_by(image_w, image_h, rows, |row, slot| {
+        if row.y < first_row_y_max && slot.col == 0 {
+            SlotKind::NoBoosterOption
+        } else {
+            SlotKind::Booster
+        }
+    })
+}
+
+fn rows_to_slots_by(
+    image_w: u32,
+    image_h: u32,
+    rows: &[RowCandidate],
+    mut kind_for_slot: impl FnMut(&RowCandidate, &SlotCandidate) -> SlotKind,
+) -> Vec<Slot> {
+    let mut slots = Vec::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        for candidate in &row.slots {
+            slots.push(slot_from_rect(
+                slot_rect(image_w, image_h, candidate.x, row.y),
+                row_index as u32,
+                candidate.col,
+                kind_for_slot(row, candidate),
+            ));
+        }
+    }
+    slots
+}
+
+fn slot_from_rect(rect: ImageRect, row: u32, col: u32, kind: SlotKind) -> Slot {
+    Slot {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        row,
+        col,
+        kind,
+        classification: None,
+    }
+}
+
+fn slot_rect(image_w: u32, image_h: u32, x: i32, y: i32) -> ImageRect {
+    let sx = image_w as f32 / ROI_REFERENCE_W_F32;
+    let sy = image_h as f32 / ROI_REFERENCE_H_F32;
+    ImageRect {
+        x: (x as f32 * sx).round() as u32,
+        y: (y as f32 * sy).round() as u32,
+        w: (SLOT_SIZE_I32 as f32 * sx).round().max(1.0) as u32,
+        h: (SLOT_SIZE_I32 as f32 * sy).round().max(1.0) as u32,
+    }
+}
+
+fn scan_profile(
+    lookup: &ProfileLookup,
+    integral: &IntegralImage,
+    profile: Profile,
+) -> Vec<RowCandidate> {
+    let mut candidates = Vec::new();
+
+    for y in profile.y_min..=profile.y_max {
+        if let Some(row) = score_row_at(lookup, integral, &profile, y) {
+            candidates.push(row);
+        }
+    }
+
+    // Each integer y has already been scored, so DP itself is the final joint
+    // optimization over row scores and the hard spacing constraint.
+    select_rows_dp_hard(&candidates, profile.max_rows, ROW_MIN_DIST)
+}
+
+fn select_rows_dp_hard(
+    candidates: &[RowCandidate],
+    max_rows: usize,
+    min_gap: i32,
+) -> Vec<RowCandidate> {
+    if candidates.is_empty() || max_rows == 0 {
+        return Vec::new();
+    }
+
+    let n = candidates.len();
+    let k_max = max_rows.min(n);
+
+    let mut prev = vec![-1isize; n];
+    let mut j: isize = -1;
+    for i in 0..n {
+        while (j + 1) < i as isize && candidates[i].y - candidates[(j + 1) as usize].y >= min_gap {
+            j += 1;
+        }
+        prev[i] = j;
+    }
+
+    let neg = -1.0e30f32;
+    let stride = k_max + 1;
+    let mut dp = vec![neg; (n + 1) * stride];
+    let mut take = vec![false; (n + 1) * stride];
+    for i in 0..=n {
+        dp[i * stride] = 0.0;
+    }
+
+    for i in 1..=n {
+        let row = &candidates[i - 1];
+        let p = (prev[i - 1] + 1) as usize;
+        for k in 1..=k_max {
+            let index = i * stride + k;
+            let skip = dp[(i - 1) * stride + k];
+            let use_score = dp[p * stride + k - 1] + row.score;
+            if use_score > skip + 1e-9 {
+                dp[index] = use_score;
+                take[index] = true;
+            } else {
+                dp[index] = skip;
+            }
+        }
+    }
+
+    let mut best_k = 0usize;
+    let mut best_score = dp[n * stride];
+    for k in 1..=k_max {
+        let score = dp[n * stride + k];
+        if score > best_score + 1e-9 {
+            best_score = score;
+            best_k = k;
+        }
+    }
+
+    let mut selected = Vec::new();
+    let mut i = n;
+    let mut k = best_k;
+    while i > 0 && k > 0 {
+        if take[i * stride + k] {
+            selected.push(candidates[i - 1].clone());
+            i = (prev[i - 1] + 1) as usize;
+            k -= 1;
+        } else {
+            i -= 1;
+        }
+    }
+    selected.reverse();
+    selected
+}
+
+fn score_row_at(
+    lookup: &ProfileLookup,
+    integral: &IntegralImage,
+    profile: &Profile,
+    y: i32,
+) -> Option<RowCandidate> {
+    let mut slots: [Option<SlotCandidate>; 4] = std::array::from_fn(|_| None);
+    let mut slot_count = 0usize;
+    let mut score = 0.0f32;
+    for (col, x) in profile.cols.into_iter().enumerate() {
+        if let Some((slot, slot_score)) = score_slot_at(lookup, integral, x, y, col as u32) {
+            score = score.max(slot_score);
+            slots[col] = Some(slot);
+            slot_count += 1;
+        }
+    }
+
+    // Rank a row by its strongest complete slot so a valid single-slot final row
+    // is not diluted by empty columns. Only allocate the retained slot vector for
+    // rows that pass both gates.
+    if slot_count < profile.min_slots || score < ROW_THRESHOLD {
+        return None;
+    }
+
+    Some(RowCandidate {
+        y,
+        score: score.clamp(0.0, 1.0),
+        slots: slots.into_iter().flatten().collect(),
+    })
+}
+
+fn score_slot_at(
+    lookup: &ProfileLookup,
+    integral: &IntegralImage,
+    x: i32,
+    y: i32,
+    col: u32,
+) -> Option<(SlotCandidate, f32)> {
+    let sw = SLOT_SIZE_I32;
+    let sh = SLOT_SIZE_I32;
+    let top = lookup.horizontal_edge_score(x, y);
+    let bottom = lookup.horizontal_edge_score(x, y + sh);
+    let left = lookup.vertical_edge_score(x, y);
+    let right = lookup.vertical_edge_score(x + sw, y);
+
+    let tb_min = top.min(bottom);
+    let tb_mean = 0.5 * (top + bottom);
+    let side_mean = 0.5 * (left + right);
+    let side_best = left.max(right);
+    let base_score = TB_MIN_WEIGHT * tb_min
+        + TB_MEAN_WEIGHT * tb_mean
+        + SIDE_MEAN_WEIGHT * side_mean
+        + SIDE_BEST_WEIGHT * side_best;
+
+    // Keep the established geometry gates first. Uniformity is evaluated only
+    // for candidates that could otherwise become real slots.
+    if top < MIN_HORIZONTAL_EDGE
+        || bottom < MIN_HORIZONTAL_EDGE
+        || side_best < MIN_SIDE
+        || base_score < MIN_SLOT_SCORE
+    {
+        return None;
+    }
+
+    let score = base_score * border_uniformity_factor(integral, x, y);
+    if score < MIN_SLOT_SCORE {
+        return None;
+    }
+
+    Some((SlotCandidate { x, col }, score))
+}
+
+fn border_uniformity_factor(integral: &IntegralImage, x: i32, y: i32) -> f32 {
+    let width = SLOT_SIZE_I32;
+    let height = SLOT_SIZE_I32;
+    let mut values = [0.0; BORDER_SEGMENTS];
+    let mut index = 0;
+    let top = y - H_LINE_H / 2;
+    let bottom = y + height - H_LINE_H / 2;
+    let left = x - V_LINE_W / 2;
+    let right = x + width - V_LINE_W / 2;
+
+    for bin in 0..SEGMENT_BINS {
+        let (start, end) = segment_bounds(width, bin);
+        values[index] = integral.mean_rect(x + start, top, x + end, top + H_LINE_H);
+        values[index + 1] = integral.mean_rect(x + start, bottom, x + end, bottom + H_LINE_H);
+        index += 2;
+    }
+
+    let skip_start = (SEGMENT_BINS - V_SEGMENT_SKIP_CENTER_BINS) / 2;
+    let skip_end = skip_start + V_SEGMENT_SKIP_CENTER_BINS;
+    for bin in 0..SEGMENT_BINS {
+        if (skip_start..skip_end).contains(&bin) {
+            continue;
+        }
+        let (start, end) = segment_bounds(height, bin);
+        values[index] = integral.mean_rect(left, y + start, left + V_LINE_W, y + end);
+        values[index + 1] = integral.mean_rect(right, y + start, right + V_LINE_W, y + end);
+        index += 2;
+    }
+    debug_assert_eq!(index, BORDER_SEGMENTS);
+
+    // Once ordered by luma, the segments nearest the median form one contiguous
+    // range. Trim the farther end eight times instead of sorting by deviation.
+    values.sort_unstable_by(f32::total_cmp);
+    let median = median_sorted(&values);
+    let mut first = 0;
+    let mut last = values.len();
+    for _ in 0..BORDER_UNIFORMITY_TRIM {
+        if median - values[first] > values[last - 1] - median {
+            first += 1;
+        } else {
+            last -= 1;
+        }
+    }
+
+    let retained = &values[first..last];
+    debug_assert_eq!(retained.len(), BORDER_UNIFORMITY_RETAINED);
+    let center = median_sorted(retained).max(BORDER_UNIFORMITY_LUMA_FLOOR);
+    let (sum, sum_sq) = retained.iter().fold((0.0, 0.0), |(sum, sum_sq), &value| {
+        (sum + value, sum_sq + value * value)
+    });
+    let count = retained.len() as f32;
+    let mean = sum / count;
+    let relative_std = (sum_sq / count - mean * mean).max(0.0).sqrt() / center;
+    let t = ((relative_std - BORDER_UNIFORMITY_GOOD)
+        / (BORDER_UNIFORMITY_BAD - BORDER_UNIFORMITY_GOOD))
+        .clamp(0.0, 1.0);
+    let penalty = t * t * (3.0 - 2.0 * t);
+    1.0 - BORDER_UNIFORMITY_MAX_PENALTY * penalty
+}
+
+fn median_sorted(values: &[f32]) -> f32 {
+    let mid = values.len() / 2;
+    if values.len().is_multiple_of(2) {
+        0.5 * (values[mid - 1] + values[mid])
+    } else {
+        values[mid]
+    }
+}
+
+fn segment_bounds(length: i32, bin: usize) -> (i32, i32) {
+    let scale = length as f32 / SEGMENT_BINS as f32;
+    (
+        (bin as f32 * scale).round() as i32,
+        ((bin + 1) as f32 * scale).round() as i32,
+    )
+}
+
+impl ProfileLookup {
+    fn new(integral: &IntegralImage, profile: &Profile) -> Self {
+        let started = Instant::now();
+        let width = integral.width;
+        let h_y_min = profile.y_min - EDGE_BAND;
+        let h_y_max = profile.y_max + SLOT_SIZE_I32 + EDGE_BAND;
+        let h_lines: Vec<LineScores> = profile
+            .cols
+            .par_iter()
+            .map(|x| build_horizontal_line_scores(integral, *x, h_y_min, h_y_max))
+            .collect();
+
+        let mut h_x_to_index = vec![None; width];
+        for (index, line) in h_lines.iter().enumerate() {
+            h_x_to_index[line.pos as usize] = Some(index);
+        }
+
+        let mut v_positions = Vec::new();
+        for x in profile.cols {
+            for edge_x in [x, x + SLOT_SIZE_I32] {
+                v_positions.extend(edge_x - EDGE_BAND..=edge_x + EDGE_BAND);
+            }
+        }
+        v_positions.sort_unstable();
+        v_positions.dedup();
+
+        let v_lines: Vec<LineScores> = v_positions
+            .par_iter()
+            .map(|x| build_vertical_line_scores(integral, *x, profile))
+            .collect();
+        let mut v_x_to_index = vec![None; width];
+        for (index, line) in v_lines.iter().enumerate() {
+            v_x_to_index[line.pos as usize] = Some(index);
+        }
+
+        debug!(
+            h_lines = h_lines.len(),
+            v_lines = v_lines.len(),
+            elapsed = ?started.elapsed(),
+            "geometry profile lookup built"
+        );
+
+        Self {
+            h_lines,
+            h_x_to_index,
+            v_x_to_index,
+            v_lines,
+        }
+    }
+
+    fn horizontal_edge_score(&self, x: i32, y: i32) -> f32 {
+        let Some(Some(index)) = self.h_x_to_index.get(x as usize) else {
+            return 0.0;
+        };
+        let line = &self.h_lines[*index];
+        let center = line.score_at(y);
+        let neighbor = line
+            .score_at(y - EDGE_BAND)
+            .max(line.score_at(y + EDGE_BAND));
+        center_biased_band_score(center, neighbor, H_EDGE_CENTER_WEIGHT)
+    }
+
+    fn vertical_edge_score(&self, x: i32, y: i32) -> f32 {
+        let mut best = f32::NEG_INFINITY;
+        let mut second = f32::NEG_INFINITY;
+        let mut count = 0usize;
+        for xx in x - EDGE_BAND..=x + EDGE_BAND {
+            let Some(Some(index)) = self.v_x_to_index.get(xx as usize) else {
+                continue;
+            };
+            push_top2(self.v_lines[*index].score_at(y), &mut best, &mut second);
+            count += 1;
+        }
+        topk2_mean(best, second, count).unwrap_or(0.0)
+    }
+}
+
+fn horizontal_score_at(integral: &IntegralImage, x: i32, y: i32) -> f32 {
+    response_to_score(
+        horizontal_response(integral, x, y),
+        H_RESPONSE_THR,
+        H_RESPONSE_HI,
+    )
+}
+
+fn vertical_score_at(integral: &IntegralImage, x: i32, y: i32) -> f32 {
+    response_to_score(
+        vertical_response(integral, x, y),
+        V_RESPONSE_THR,
+        V_RESPONSE_HI,
+    )
+}
+
+impl LineScores {
+    fn score_at(&self, position: i32) -> f32 {
+        let index = position - self.start;
+        if index < 0 {
+            return 0.0;
+        }
+        self.scores.get(index as usize).copied().unwrap_or(0.0)
+    }
+}
+
+fn build_horizontal_line_scores(
+    integral: &IntegralImage,
+    x: i32,
+    y_min: i32,
+    y_max: i32,
+) -> LineScores {
+    let mut scores = Vec::with_capacity((y_max - y_min + 1).max(0) as usize);
+    for y in y_min..=y_max {
+        scores.push(segmented_score_by_sampling_step(
+            SLOT_SIZE_I32,
+            H_SEGMENT_SAMPLE_STEP,
+            |offset| {
+                let px = x + offset;
+                horizontal_score_at(integral, px, y)
+            },
+        ));
+    }
+
+    LineScores {
+        pos: x,
+        start: y_min,
+        scores,
+    }
+}
+
+fn build_vertical_line_scores(integral: &IntegralImage, x: i32, profile: &Profile) -> LineScores {
+    let y_min = profile.y_min;
+    let y_max = profile.y_max;
+    let response_y_max = y_max + SLOT_SIZE_I32;
+    let mut response_scores = Vec::with_capacity((response_y_max - y_min + 1).max(0) as usize);
+    for y in y_min..=response_y_max {
+        response_scores.push(vertical_score_at(integral, x, y));
+    }
+
+    let mut prefix = Vec::with_capacity(response_scores.len() + 1);
+    prefix.push(0.0);
+    for score in response_scores {
+        prefix.push(prefix.last().copied().unwrap_or(0.0) + score);
+    }
+
+    let mut scores = Vec::with_capacity((y_max - y_min + 1).max(0) as usize);
+    for y in y_min..=y_max {
+        scores.push(segmented_score_from_prefix_masked(
+            &prefix,
+            y_min,
+            y,
+            SLOT_SIZE_I32,
+            V_SEGMENT_SKIP_CENTER_BINS,
+        ));
+    }
+
+    LineScores {
+        pos: x,
+        start: y_min,
+        scores,
+    }
+}
+
+fn center_biased_band_score(center: f32, neighbor: f32, center_weight: f32) -> f32 {
+    (center_weight * center + neighbor) / (center_weight + 1.0)
+}
+
+fn push_top2(value: f32, best: &mut f32, second: &mut f32) {
+    if value > *best {
+        *second = *best;
+        *best = value;
+    } else if value > *second {
+        *second = value;
+    }
+}
+
+fn topk2_mean(best: f32, second: f32, count: usize) -> Option<f32> {
+    if count == 0 {
+        None
+    } else if EDGE_BAND_TOPK <= 1 || count == 1 {
+        Some(best)
+    } else {
+        Some((best + second) * 0.5)
+    }
+}
+
+fn segmented_score_by_sampling_step<F>(length: i32, step: i32, mut sample: F) -> f32
+where
+    F: FnMut(i32) -> f32,
+{
+    let step = step.max(1);
+    segmented_score(length, |start, end| {
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for offset in (start..end).step_by(step as usize) {
+            sum += sample(offset);
+            count += 1;
+        }
+        if count == 0 { 0.0 } else { sum / count as f32 }
+    })
+}
+
+fn segmented_score_from_prefix_masked(
+    prefix: &[f32],
+    base: i32,
+    start: i32,
+    length: i32,
+    skip_center_bins: usize,
+) -> f32 {
+    segmented_score_masked(length, skip_center_bins, |bin_start, bin_end| {
+        let y0 = (start + bin_start - base).max(0) as usize;
+        let y1 = (start + bin_end - base).clamp(0, prefix.len().saturating_sub(1) as i32) as usize;
+        if y1 <= y0 {
+            return 0.0;
+        }
+        (prefix[y1] - prefix[y0]) / (y1 - y0) as f32
+    })
+}
+
+fn segmented_score<F>(length: i32, bin_mean: F) -> f32
+where
+    F: FnMut(i32, i32) -> f32,
+{
+    segmented_score_masked(length, 0, bin_mean)
+}
+
+fn segmented_score_masked<F>(length: i32, skip_center_bins: usize, mut bin_mean: F) -> f32
+where
+    F: FnMut(i32, i32) -> f32,
+{
+    if length <= 0 {
+        return 0.0;
+    }
+
+    let mut mean_score = 0.0;
+    let mut active = 0usize;
+    let mut used = 0usize;
+    let skip = skip_center_bins.min(SEGMENT_BINS.saturating_sub(1));
+    let skip_start = (SEGMENT_BINS - skip) / 2;
+    let skip_end = skip_start + skip;
+    for bin in 0..SEGMENT_BINS {
+        if skip > 0 && (skip_start..skip_end).contains(&bin) {
+            continue;
+        }
+        let (a, b) = segment_bounds(length, bin);
+        if b <= a {
+            continue;
+        }
+
+        let mean = bin_mean(a, b);
+        mean_score += mean;
+        used += 1;
+        if mean >= SEGMENT_MIN_BIN_SCORE {
+            active += 1;
+        }
+    }
+
+    let used = used.max(1);
+    let mean_score = mean_score / used as f32;
+    let active_ratio = active as f32 / used as f32;
+    (0.65 * mean_score + 0.35 * active_ratio).clamp(0.0, 1.0)
+}
+
+fn resize_l8_lanczos(src: GrayImage, dst_w: u32, dst_h: u32) -> Result<GrayImage> {
+    if src.width() == dst_w && src.height() == dst_h {
+        return Ok(src);
+    }
+
+    let mut destination = GrayImage::new(dst_w, dst_h);
+    let options =
+        ResizeOptions::new().resize_alg(ResizeAlg::Convolution(fir::FilterType::Lanczos3));
+    Resizer::new()
+        .resize(&src, &mut destination, &options)
+        .map_err(|e| anyhow::anyhow!("failed to FIR-resize L8 image: {e}"))?;
+    Ok(destination)
+}
+
+fn luma_canonical(rgba: &RgbaImage) -> Result<GrayImage> {
+    let width = rgba.width() as usize;
+    let mut raw = vec![0; width * rgba.height() as usize];
+    let (pixels, remainder) = rgba.as_raw().as_chunks::<4>();
+    debug_assert!(remainder.is_empty());
+    for (pixel, luma) in pixels.iter().zip(&mut raw) {
+        *luma = color::luma601_u8(pixel[0], pixel[1], pixel[2]);
+    }
+
+    let gray = GrayImage::from_raw(rgba.width(), rgba.height(), raw)
+        .ok_or_else(|| anyhow::anyhow!("failed to create grayscale ROI image"))?;
+    resize_l8_lanczos(gray, ROI_REFERENCE_W, ROI_REFERENCE_H)
+}
+
+fn horizontal_response(integral: &IntegralImage, x: i32, y: i32) -> f32 {
+    let side_offset = (H_LINE_H + H_SIDE_H) / 2;
+    let core = integral.mean_centered(x, y, H_WIN, H_LINE_H);
+    let above = integral.mean_centered(x, y - side_offset, H_WIN, H_SIDE_H);
+    let below = integral.mean_centered(x, y + side_offset, H_WIN, H_SIDE_H);
+    let (_, std) = integral.mean_std_centered(x, y, H_WIN, H_LINE_H + 2 * H_SIDE_H);
+    ((core - above).abs() + (core - below).abs()) / (2.0 * (std + Z_EPS))
+}
+
+fn vertical_response(integral: &IntegralImage, x: i32, y: i32) -> f32 {
+    let side_offset = (V_LINE_W + V_SIDE_W) / 2;
+    let core = integral.mean_centered(x, y, V_LINE_W, V_WIN);
+    let left = integral.mean_centered(x - side_offset, y, V_SIDE_W, V_WIN);
+    let right = integral.mean_centered(x + side_offset, y, V_SIDE_W, V_WIN);
+    let (_, std) = integral.mean_std_centered(x, y, V_LINE_W + 2 * V_SIDE_W, V_WIN);
+    ((core - left).abs() + (core - right).abs()) / (2.0 * (std + Z_EPS))
+}
+
+fn response_to_score(response: f32, threshold: f32, high: f32) -> f32 {
+    ((response - threshold) / (high - threshold).max(1e-6)).clamp(0.0, 1.0)
 }
 
 impl IntegralImage {
@@ -358,53 +853,28 @@ impl IntegralImage {
         let values = luma.as_raw();
         let stride = width + 1;
         let scale = 1.0 / 255.0;
-        let mut sum = vec![0.0f32; (width + 1) * (height + 1)];
-        let mut sum_sq = vec![0.0f32; (width + 1) * (height + 1)];
+        let mut sum = vec![0.0; (width + 1) * (height + 1)];
+        let mut sum_sq = vec![0.0; (width + 1) * (height + 1)];
+
         for (y, row) in values.chunks_exact(width).enumerate() {
-            let mut row_sum = 0.0f32;
-            let mut row_sum_sq = 0.0f32;
+            let mut row_sum = 0.0;
+            let mut row_sum_sq = 0.0;
             for (x, &value) in row.iter().enumerate() {
                 let value = value as f32 * scale;
                 row_sum += value;
                 row_sum_sq += value * value;
-                let index = (y + 1) * stride + x + 1;
-                sum[index] = sum[y * stride + x + 1] + row_sum;
-                sum_sq[index] = sum_sq[y * stride + x + 1] + row_sum_sq;
+                let idx = (y + 1) * stride + x + 1;
+                sum[idx] = sum[y * stride + x + 1] + row_sum;
+                sum_sq[idx] = sum_sq[y * stride + x + 1] + row_sum_sq;
             }
         }
+
         Self {
             width,
             height,
             sum,
             sum_sq,
         }
-    }
-
-    fn rect_sum(&self, table: &[f32], x0: i32, y0: i32, x1: i32, y1: i32) -> (f32, u32) {
-        let x0 = x0.clamp(0, self.width as i32) as usize;
-        let y0 = y0.clamp(0, self.height as i32) as usize;
-        let x1 = x1.clamp(0, self.width as i32) as usize;
-        let y1 = y1.clamp(0, self.height as i32) as usize;
-        if x1 <= x0 || y1 <= y0 {
-            return (0.0, 0);
-        }
-        let stride = self.width + 1;
-        let sum = table[y1 * stride + x1] - table[y0 * stride + x1] - table[y1 * stride + x0]
-            + table[y0 * stride + x0];
-        (sum, ((x1 - x0) * (y1 - y0)) as u32)
-    }
-
-    fn rect_sum_centered(
-        &self,
-        table: &[f32],
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    ) -> (f32, u32) {
-        let x0 = (x - width / 2).clamp(0, self.width as i32);
-        let y0 = (y - height / 2).clamp(0, self.height as i32);
-        self.rect_sum(table, x0, y0, x0 + width, y0 + height)
     }
 
     fn mean_centered(&self, x: i32, y: i32, width: i32, height: i32) -> f32 {
@@ -425,867 +895,90 @@ impl IntegralImage {
         let (sum, count) = self.rect_sum(&self.sum, x0, y0, x1, y1);
         sum / count.max(1) as f32
     }
-}
 
-// ─── 三带边线响应 ───
-
-fn horizontal_response(integral: &IntegralImage, x: i32, y: i32, cfg: &GeometryConfig) -> f32 {
-    let side_offset = (cfg.h_line_h + cfg.h_side_h) / 2;
-    let core = integral.mean_centered(x, y, cfg.h_window, cfg.h_line_h);
-    let above = integral.mean_centered(x, y - side_offset, cfg.h_window, cfg.h_side_h);
-    let below = integral.mean_centered(x, y + side_offset, cfg.h_window, cfg.h_side_h);
-    let (_, std) = integral.mean_std_centered(x, y, cfg.h_window, cfg.h_line_h + 2 * cfg.h_side_h);
-    ((core - above).abs() + (core - below).abs()) / (2.0 * (std + cfg.z_eps))
-}
-
-fn vertical_response(integral: &IntegralImage, x: i32, y: i32, cfg: &GeometryConfig) -> f32 {
-    let side_offset = (cfg.v_line_w + cfg.v_side_w) / 2;
-    let core = integral.mean_centered(x, y, cfg.v_line_w, cfg.v_window);
-    let left = integral.mean_centered(x - side_offset, y, cfg.v_side_w, cfg.v_window);
-    let right = integral.mean_centered(x + side_offset, y, cfg.v_side_w, cfg.v_window);
-    let (_, std) = integral.mean_std_centered(x, y, cfg.v_line_w + 2 * cfg.v_side_w, cfg.v_window);
-    ((core - left).abs() + (core - right).abs()) / (2.0 * (std + cfg.z_eps))
-}
-
-fn response_to_score(response: f32, threshold: f32, high: f32) -> f32 {
-    ((response - threshold) / (high - threshold).max(1e-6)).clamp(0.0, 1.0)
-}
-
-// ─── 分段打分 ───
-
-fn segment_bounds(length: i32, bin: usize, bins: usize) -> (i32, i32) {
-    let scale = length as f32 / bins.max(1) as f32;
-    (
-        (bin as f32 * scale).round() as i32,
-        ((bin + 1) as f32 * scale).round() as i32,
-    )
-}
-
-fn segmented_score_masked<F>(
-    length: i32,
-    skip_center_bins: usize,
-    bins: usize,
-    cfg: &GeometryConfig,
-    mut bin_mean: F,
-) -> f32
-where
-    F: FnMut(i32, i32) -> f32,
-{
-    if length <= 0 || bins == 0 {
-        return 0.0;
+    fn rect_sum_centered(
+        &self,
+        table: &[f32],
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> (f32, u32) {
+        let x0 = (x - width / 2).clamp(0, self.width as i32);
+        let y0 = (y - height / 2).clamp(0, self.height as i32);
+        self.rect_sum(table, x0, y0, x0 + width, y0 + height)
     }
-    let skip = skip_center_bins.min(bins.saturating_sub(1));
-    let skip_start = (bins - skip) / 2;
-    let skip_end = skip_start + skip;
-    let mut mean_score = 0.0f32;
-    let mut active = 0usize;
-    let mut used = 0usize;
-    for bin in 0..bins {
-        if skip > 0 && (skip_start..skip_end).contains(&bin) {
-            continue;
-        }
-        let (a, b) = segment_bounds(length, bin, bins);
-        if b <= a {
-            continue;
-        }
-        let mean = bin_mean(a, b);
-        mean_score += mean;
-        used += 1;
-        if mean >= cfg.segment_min_bin_score {
-            active += 1;
-        }
-    }
-    let used = used.max(1);
-    let mean_score = mean_score / used as f32;
-    let active_ratio = active as f32 / used as f32;
-    (cfg.segment_mean_weight * mean_score + cfg.segment_active_weight * active_ratio)
-        .clamp(0.0, 1.0)
-}
 
-fn segmented_score_by_sampling_step<F>(
-    length: i32,
-    step: i32,
-    cfg: &GeometryConfig,
-    mut sample: F,
-) -> f32
-where
-    F: FnMut(i32) -> f32,
-{
-    let step = step.max(1);
-    let bins = cfg.segment_bins;
-    segmented_score_masked(length, 0, bins, cfg, |start, end| {
-        let mut sum = 0.0f32;
-        let mut count = 0usize;
-        let mut offset = start;
-        while offset < end {
-            sum += sample(offset);
-            count += 1;
-            offset += step;
-        }
-        if count == 0 {
-            0.0
-        } else {
-            sum / count as f32
-        }
-    })
-}
-
-fn segmented_score_from_prefix_masked(
-    prefix: &[f32],
-    base: i32,
-    start: i32,
-    length: i32,
-    skip_center_bins: usize,
-    cfg: &GeometryConfig,
-) -> f32 {
-    segmented_score_masked(
-        length,
-        skip_center_bins,
-        cfg.segment_bins,
-        cfg,
-        |bin_start, bin_end| {
-            let y0 = (start + bin_start - base).max(0) as usize;
-            let y1 =
-                (start + bin_end - base).clamp(0, prefix.len().saturating_sub(1) as i32) as usize;
-            if y1 <= y0 {
-                return 0.0;
-            }
-            (prefix[y1] - prefix[y0]) / (y1 - y0) as f32
-        },
-    )
-}
-
-// ─── 预计算边线分数 ───
-
-struct LineScores {
-    pos: i32,
-    start: i32,
-    scores: Vec<f32>,
-}
-
-impl LineScores {
-    fn score_at(&self, position: i32) -> f32 {
-        let index = position - self.start;
-        if index < 0 {
-            return 0.0;
-        }
-        self.scores.get(index as usize).copied().unwrap_or(0.0)
-    }
-}
-
-struct ProfileLookup {
-    h_lines: Vec<LineScores>,
-    h_x_to_index: Vec<Option<usize>>,
-    v_lines: Vec<LineScores>,
-    v_x_to_index: Vec<Option<usize>>,
-}
-
-impl ProfileLookup {
-    fn new(integral: &IntegralImage, profile: &Profile, cfg: &GeometryConfig) -> Self {
-        let width = integral.width;
-        let h_y_min = profile.y_min - cfg.edge_band;
-        let h_y_max = profile.y_max + cfg.slot_size + cfg.edge_band;
-        let h_lines: Vec<LineScores> = profile
-            .cols
-            .iter()
-            .map(|x| build_horizontal_line_scores(integral, *x, h_y_min, h_y_max, cfg))
-            .collect();
-        let mut h_x_to_index = vec![None; width];
-        for (index, line) in h_lines.iter().enumerate() {
-            if line.pos >= 0 && (line.pos as usize) < width {
-                h_x_to_index[line.pos as usize] = Some(index);
-            }
+    fn rect_sum(&self, table: &[f32], x0: i32, y0: i32, x1: i32, y1: i32) -> (f32, u32) {
+        let x0 = x0.clamp(0, self.width as i32) as usize;
+        let y0 = y0.clamp(0, self.height as i32) as usize;
+        let x1 = x1.clamp(0, self.width as i32) as usize;
+        let y1 = y1.clamp(0, self.height as i32) as usize;
+        if x1 <= x0 || y1 <= y0 {
+            return (0.0, 0);
         }
 
-        let mut v_positions: Vec<i32> = Vec::new();
-        for x in &profile.cols {
-            for edge_x in [*x, *x + cfg.slot_size] {
-                v_positions.extend(edge_x - cfg.edge_band..=edge_x + cfg.edge_band);
-            }
-        }
-        v_positions.sort_unstable();
-        v_positions.dedup();
-        let v_lines: Vec<LineScores> = v_positions
-            .iter()
-            .map(|x| build_vertical_line_scores(integral, *x, profile, cfg))
-            .collect();
-        let mut v_x_to_index = vec![None; width];
-        for (index, line) in v_lines.iter().enumerate() {
-            if line.pos >= 0 && (line.pos as usize) < width {
-                v_x_to_index[line.pos as usize] = Some(index);
-            }
-        }
-
-        Self {
-            h_lines,
-            h_x_to_index,
-            v_lines,
-            v_x_to_index,
-        }
-    }
-
-    fn horizontal_edge_score(&self, x: i32, y: i32, cfg: &GeometryConfig) -> f32 {
-        let Some(index) = self.h_x_to_index.get(x.max(0) as usize).copied().flatten() else {
-            return 0.0;
-        };
-        let line = &self.h_lines[index];
-        let center = line.score_at(y);
-        let neighbor = line
-            .score_at(y - cfg.edge_band)
-            .max(line.score_at(y + cfg.edge_band));
-        (cfg.h_edge_center_weight * center + neighbor) / (cfg.h_edge_center_weight + 1.0)
-    }
-
-    fn vertical_edge_score(&self, x: i32, y: i32, cfg: &GeometryConfig) -> f32 {
-        let mut best = f32::NEG_INFINITY;
-        let mut second = f32::NEG_INFINITY;
-        let mut count = 0usize;
-        for xx in x - cfg.edge_band..=x + cfg.edge_band {
-            if xx < 0 {
-                continue;
-            }
-            let Some(index) = self.v_x_to_index.get(xx as usize).copied().flatten() else {
-                continue;
-            };
-            let value = self.v_lines[index].score_at(y);
-            push_top2(value, &mut best, &mut second);
-            count += 1;
-        }
-        if count == 0 {
-            0.0
-        } else if cfg.edge_band_topk <= 1 || count == 1 {
-            best.max(0.0)
-        } else {
-            (((best + second) * 0.5).max(0.0)).min(1.0)
-        }
+        let stride = self.width + 1;
+        let sum = table[y1 * stride + x1] - table[y0 * stride + x1] - table[y1 * stride + x0]
+            + table[y0 * stride + x0];
+        (sum, ((x1 - x0) * (y1 - y0)) as u32)
     }
 }
 
-fn push_top2(value: f32, best: &mut f32, second: &mut f32) {
-    if value > *best {
-        *second = *best;
-        *best = value;
-    } else if value > *second {
-        *second = value;
-    }
-}
-
-fn build_horizontal_line_scores(
-    integral: &IntegralImage,
-    x: i32,
-    y_min: i32,
-    y_max: i32,
-    cfg: &GeometryConfig,
-) -> LineScores {
-    let mut scores = Vec::with_capacity((y_max - y_min + 1).max(0) as usize);
-    for y in y_min..=y_max {
-        scores.push(segmented_score_by_sampling_step(
-            cfg.slot_size,
-            1,
-            cfg,
-            |offset| {
-                response_to_score(
-                    horizontal_response(integral, x + offset, y, cfg),
-                    cfg.h_response_thr,
-                    cfg.h_response_hi,
-                )
-            },
-        ));
-    }
-    LineScores {
-        pos: x,
-        start: y_min,
-        scores,
-    }
-}
-
-fn build_vertical_line_scores(
-    integral: &IntegralImage,
-    x: i32,
-    profile: &Profile,
-    cfg: &GeometryConfig,
-) -> LineScores {
-    let y_min = profile.y_min;
-    let y_max = profile.y_max;
-    let response_y_max = y_max + cfg.slot_size;
-    let mut response_scores = Vec::with_capacity((response_y_max - y_min + 1).max(0) as usize);
-    for y in y_min..=response_y_max {
-        response_scores.push(response_to_score(
-            vertical_response(integral, x, y, cfg),
-            cfg.v_response_thr,
-            cfg.v_response_hi,
-        ));
-    }
-    let mut prefix = Vec::with_capacity(response_scores.len() + 1);
-    prefix.push(0.0);
-    for score in response_scores {
-        prefix.push(prefix.last().copied().unwrap_or(0.0) + score);
-    }
-    let mut scores = Vec::with_capacity((y_max - y_min + 1).max(0) as usize);
-    for y in y_min..=y_max {
-        scores.push(segmented_score_from_prefix_masked(
-            &prefix,
-            y_min,
-            y,
-            cfg.slot_size,
-            cfg.v_segment_skip_center_bins,
-            cfg,
-        ));
-    }
-    LineScores {
-        pos: x,
-        start: y_min,
-        scores,
-    }
-}
-
-// ─── 槽位与行打分 ───
-
-struct Profile {
-    cols: Vec<i32>,
-    y_min: i32,
-    y_max: i32,
-    max_rows: usize,
-    min_slots: usize,
-}
-
-#[derive(Clone)]
-struct SlotCandidate {
-    x: i32,
-    col: u32,
-    score: f32,
-}
-
-#[derive(Clone)]
-struct RowCandidate {
-    y: i32,
-    score: f32,
-    slots: Vec<SlotCandidate>,
-}
-
-/// 单个候选槽位的验证分数（参考实现 `score_slot_at`）。
-fn score_slot(
-    lookup: &ProfileLookup,
-    integral: &IntegralImage,
-    x: i32,
-    y: i32,
-    cfg: &GeometryConfig,
-) -> Option<SlotCandidate> {
-    let slot_size = cfg.slot_size;
-    let top = lookup.horizontal_edge_score(x, y, cfg);
-    let bottom = lookup.horizontal_edge_score(x, y + slot_size, cfg);
-    let left = lookup.vertical_edge_score(x, y, cfg);
-    let right = lookup.vertical_edge_score(x + slot_size, y, cfg);
-
-    let tb_min = top.min(bottom);
-    let tb_mean = 0.5 * (top + bottom);
-    let side_mean = 0.5 * (left + right);
-    let side_best = left.max(right);
-    let base_score = cfg.tb_min_weight * tb_min
-        + cfg.tb_mean_weight * tb_mean
-        + cfg.side_mean_weight * side_mean
-        + cfg.side_best_weight * side_best;
-
-    if top < cfg.min_horizontal_edge
-        || bottom < cfg.min_horizontal_edge
-        || side_best < cfg.min_side
-        || base_score < cfg.min_slot_score
-    {
-        return None;
-    }
-    let score = base_score * border_uniformity_factor(integral, x, y, cfg);
-    if score < cfg.min_slot_score {
-        return None;
-    }
-    Some(SlotCandidate { x, col: 0, score })
-}
-
-/// 边框一致性：36 段亮度的相对离散度 → 0.4~1.0 的惩罚系数
-/// （参考实现 `border_uniformity_factor`）。
-fn border_uniformity_factor(integral: &IntegralImage, x: i32, y: i32, cfg: &GeometryConfig) -> f32 {
-    let width = cfg.slot_size;
-    let height = cfg.slot_size;
-    let segments = cfg.border_segments();
-    let mut values = vec![0.0f32; segments];
-    let mut index = 0usize;
-    let top = y - cfg.h_line_h / 2;
-    let bottom = y + height - cfg.h_line_h / 2;
-    let left = x - cfg.v_line_w / 2;
-    let right = x + width - cfg.v_line_w / 2;
-    for bin in 0..cfg.segment_bins {
-        let (start, end) = segment_bounds(width, bin, cfg.segment_bins);
-        if index + 1 >= values.len() {
-            break;
-        }
-        values[index] = integral.mean_rect(x + start, top, x + end, top + cfg.h_line_h);
-        values[index + 1] = integral.mean_rect(x + start, bottom, x + end, bottom + cfg.h_line_h);
-        index += 2;
-    }
-    let skip = cfg
-        .v_segment_skip_center_bins
-        .min(cfg.segment_bins.saturating_sub(1));
-    let skip_start = (cfg.segment_bins - skip) / 2;
-    let skip_end = skip_start + skip;
-    for bin in 0..cfg.segment_bins {
-        if skip > 0 && (skip_start..skip_end).contains(&bin) {
-            continue;
-        }
-        let (start, end) = segment_bounds(height, bin, cfg.segment_bins);
-        if index + 1 >= values.len() {
-            break;
-        }
-        values[index] = integral.mean_rect(left, y + start, left + cfg.v_line_w, y + end);
-        values[index + 1] = integral.mean_rect(right, y + start, right + cfg.v_line_w, y + end);
-        index += 2;
-    }
-    // 未填充的段按 0 处理（越界槽位）：直接给最低一致性
-    if index < segments {
-        return 0.4;
-    }
-
-    values.sort_by(f32::total_cmp);
-    let median = median_sorted(&values);
-    let mut first = 0usize;
-    let mut last = values.len();
-    for _ in 0..cfg.border_uniformity_trim {
-        if last <= first + 1 {
-            break;
-        }
-        if median - values[first] > values[last - 1] - median {
-            first += 1;
-        } else {
-            last -= 1;
-        }
-    }
-    let retained = &values[first..last];
-    if retained.is_empty() {
-        return 0.4;
-    }
-    let center = median_sorted(retained).max(cfg.border_uniformity_luma_floor);
-    let count = retained.len() as f32;
-    let mean = retained.iter().sum::<f32>() / count;
-    let variance = (retained.iter().map(|v| v * v).sum::<f32>() / count - mean * mean).max(0.0);
-    let relative_std = variance.sqrt() / center;
-    let t = ((relative_std - cfg.border_uniformity_good)
-        / (cfg.border_uniformity_bad - cfg.border_uniformity_good).max(1e-6))
-    .clamp(0.0, 1.0);
-    let penalty = t * t * (3.0 - 2.0 * t);
-    (1.0 - cfg.border_uniformity_max_penalty * penalty).clamp(0.0, 1.0)
-}
-
-fn median_sorted(values: &[f32]) -> f32 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
-        0.5 * (values[mid - 1] + values[mid])
-    } else {
-        values[mid]
-    }
-}
-
-/// 单个 y 上的行候选（参考实现 `score_row_at`）。
-fn score_row_at(
-    lookup: &ProfileLookup,
-    integral: &IntegralImage,
-    profile: &Profile,
-    y: i32,
-    cfg: &GeometryConfig,
-) -> Option<RowCandidate> {
-    let mut slots: Vec<SlotCandidate> = Vec::new();
-    let mut score = 0.0f32;
-    for (col, x) in profile.cols.iter().enumerate() {
-        if let Some(mut candidate) = score_slot(lookup, integral, *x, y, cfg) {
-            candidate.col = col as u32;
-            score = score.max(candidate.score);
-            slots.push(candidate);
-        }
-    }
-    if slots.len() < profile.min_slots || score < cfg.row_threshold {
-        return None;
-    }
-    Some(RowCandidate {
-        y,
-        score: score.clamp(0.0, 1.0),
-        slots,
-    })
-}
-
-/// 逐像素扫描行区间，再用 DP 选行（参考实现 `scan_profile` + `select_rows_dp_hard`）。
-fn scan_profile(
-    lookup: &ProfileLookup,
-    integral: &IntegralImage,
-    profile: &Profile,
-    cfg: &GeometryConfig,
-) -> Vec<RowCandidate> {
-    let mut candidates = Vec::new();
-    for y in profile.y_min..=profile.y_max {
-        if let Some(row) = score_row_at(lookup, integral, profile, y, cfg) {
-            candidates.push(row);
-        }
-    }
-    select_rows_dp_hard(&candidates, profile.max_rows, cfg.row_min_dist)
-}
-
-/// DP：在「行距 >= min_gap」的硬约束下挑出总分最高的至多 max_rows 行。
-fn select_rows_dp_hard(
-    candidates: &[RowCandidate],
-    max_rows: usize,
-    min_gap: i32,
-) -> Vec<RowCandidate> {
-    if candidates.is_empty() || max_rows == 0 {
-        return Vec::new();
-    }
-    let n = candidates.len();
-    let k_max = max_rows.min(n);
-    let mut prev = vec![-1isize; n];
-    let mut j: isize = -1;
-    for i in 0..n {
-        while (j + 1) < i as isize && candidates[i].y - candidates[(j + 1) as usize].y >= min_gap {
-            j += 1;
-        }
-        prev[i] = j;
-    }
-
-    let neg = -1.0e30f32;
-    let stride = k_max + 1;
-    let mut dp = vec![neg; (n + 1) * stride];
-    let mut take = vec![false; (n + 1) * stride];
-    for i in 0..=n {
-        dp[i * stride] = 0.0;
-    }
-    for i in 1..=n {
-        let row = &candidates[i - 1];
-        let p = (prev[i - 1] + 1) as usize;
-        for k in 1..=k_max {
-            let index = i * stride + k;
-            let skip = dp[(i - 1) * stride + k];
-            let use_score = dp[p * stride + k - 1] + row.score;
-            if use_score > skip + 1e-9 {
-                dp[index] = use_score;
-                take[index] = true;
-            } else {
-                dp[index] = skip;
-            }
-        }
-    }
-    let mut best_k = 0usize;
-    let mut best_score = dp[n * stride];
-    for k in 1..=k_max {
-        let score = dp[n * stride + k];
-        if score > best_score + 1e-9 {
-            best_score = score;
-            best_k = k;
-        }
-    }
-    let mut selected = Vec::new();
-    let mut i = n;
-    let mut k = best_k;
-    while i > 0 && k > 0 {
-        if take[i * stride + k] {
-            selected.push(candidates[i - 1].clone());
-            i = (prev[i - 1] + 1) as usize;
-            k -= 1;
-        } else {
-            i -= 1;
-        }
-    }
-    selected.reverse();
-    selected
-}
-
-/// home 槽位内容检查：中心区域的相对标准差是否达到「有内容」门槛
-/// （参考实现 `slot_has_content`）。
-fn slot_has_content(integral: &IntegralImage, x: i32, y: i32, cfg: &GeometryConfig) -> bool {
-    let content_size = (cfg.slot_size - 2 * cfg.home_content_inset).max(4);
-    let center_offset = cfg.slot_size / 2;
+fn slot_has_content(integral: &IntegralImage, x: i32, y: i32) -> bool {
+    let content_size = SLOT_SIZE_I32 - 2 * HOME_CONTENT_INSET;
+    let center_offset = SLOT_SIZE_I32 / 2;
     let (mean, std) = integral.mean_std_centered(
         x + center_offset,
         y + center_offset,
         content_size,
         content_size,
     );
-    std / mean.max(cfg.home_content_mean_floor) >= cfg.home_content_min_relative_std.max(0.0)
+    std / mean.max(HOME_CONTENT_MEAN_FLOOR) >= HOME_CONTENT_MIN_RELATIVE_STD
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use image::Rgba;
+fn home_booster_kind(rgba: &RgbaImage, rect: ImageRect) -> SlotKind {
+    let width = rect.w.min(rgba.width().saturating_sub(rect.x));
+    let height = rect.h.min(rgba.height().saturating_sub(rect.y));
+    let mut yellow_pixels = 0u32;
+    let mut mask_pixels = 0u32;
 
-    fn cfg() -> GeometryConfig {
-        GeometryConfig::default()
-    }
-
-    fn seg() -> SegmentationConfig {
-        SegmentationConfig::default()
-    }
-
-    /// 造一张 canonical 尺寸的 ROI：暗底 + 指定位置的亮边框方格。
-    fn canonical_roi(cells: &[ImageRect], glyph: Option<ImageRect>) -> RgbaImage {
-        let c = cfg();
-        let mut img = RgbaImage::new(c.canonical_w, c.canonical_h);
-        for (_, _, p) in img.enumerate_pixels_mut() {
-            *p = Rgba([30, 33, 38, 255]);
-        }
-        for cell in cells {
-            for y in cell.y..cell.bottom() {
-                for x in cell.x..cell.right() {
-                    if x < 0 || y < 0 || x >= c.canonical_w as i32 || y >= c.canonical_h as i32 {
-                        continue;
-                    }
-                    let edge = x == cell.x
-                        || y == cell.y
-                        || x == cell.right() - 1
-                        || y == cell.bottom() - 1;
-                    let color = if edge {
-                        [200, 200, 196, 255]
-                    } else {
-                        [70, 74, 80, 255]
-                    };
-                    img.put_pixel(x as u32, y as u32, Rgba(color));
-                }
+    for local_y in 0..height {
+        let span = booster_hex_row_span(local_y, width, height);
+        mask_pixels += span.end - span.start;
+        for local_x in span {
+            let [r, g, b, _] = rgba.get_pixel(rect.x + local_x, rect.y + local_y).0;
+            if color::booster_yellow_likeness(r, g, b) >= 0.5 {
+                yellow_pixels += 1;
             }
         }
-        if let Some(rect) = glyph {
-            for y in rect.y..rect.bottom() {
-                for x in rect.x..rect.right() {
-                    if x < 0 || y < 0 || x >= c.canonical_w as i32 || y >= c.canonical_h as i32 {
-                        continue;
-                    }
-                    img.put_pixel(x as u32, y as u32, Rgba([232, 160, 90, 255]));
-                }
-            }
-        }
-        img
     }
 
-    fn home_cells(y: i32) -> Vec<ImageRect> {
-        let c = cfg();
-        let mut cells: Vec<ImageRect> = c
-            .home_cols
-            .iter()
-            .map(|x| ImageRect::new(*x, y, c.slot_size, c.slot_size))
-            .collect();
-        cells.push(ImageRect::new(
-            c.home_booster_x,
-            y,
-            c.slot_size,
-            c.slot_size,
-        ));
-        cells
+    if mask_pixels > 0
+        && (yellow_pixels as f32) >= mask_pixels as f32 * HOME_BOOSTER_MIN_YELLOW_RATIO
+    {
+        SlotKind::HomeBooster
+    } else {
+        SlotKind::HomeBoosterEmpty
+    }
+}
+
+fn booster_hex_row_span(local_y: u32, width: u32, height: u32) -> std::ops::Range<u32> {
+    const SQRT_3: f32 = 1.732_050_8;
+
+    let y = (local_y as f32 + 0.5) / height as f32;
+    let dy = (y - BOOSTER_HEX_CENTER_Y).abs();
+    if dy > 0.5 * SQRT_3 * BOOSTER_CONTENT_SIDE_LEN {
+        return 0..0;
     }
 
-    #[test]
-    fn canonical_resize_preserves_size_and_is_identity_at_same_size() {
-        let c = cfg();
-        let roi = canonical_roi(&home_cells(636), None);
-        let same = canonical_rgba(&roi, &c);
-        assert_eq!(same.dimensions(), (c.canonical_w, c.canonical_h));
-        assert_eq!(same.get_pixel(10, 10).0, roi.get_pixel(10, 10).0);
-
-        // 缩小一半：仍返回 canonical 尺寸
-        let small = image::imageops::resize(
-            &roi,
-            c.canonical_w / 2,
-            c.canonical_h / 2,
-            image::imageops::FilterType::Triangle,
-        );
-        let back = canonical_rgba(&small, &c);
-        assert_eq!(back.dimensions(), (c.canonical_w, c.canonical_h));
-    }
-
-    #[test]
-    fn detect_home_finds_fixed_columns_and_row() {
-        let c = cfg();
-        let roi = canonical_roi(&home_cells(636), None);
-        let detection = detect_home(&roi, &c, &seg());
-        assert!(detection.verified(), "固定锚点 + 边线验证应通过");
-        assert!(detection.home);
-        assert_eq!(detection.rows, 1);
-        assert_eq!(detection.cols, 4);
-        assert_eq!(detection.slots.len(), 5);
-        for (index, slot) in detection.slots.iter().take(4).enumerate() {
-            assert_eq!(slot.col, index as u32);
-            assert_eq!(slot.rect.x, c.home_cols[index]);
-            assert!((slot.rect.y - 636).abs() <= 3, "行位置应在标定附近");
-            assert!(slot.score > c.min_slot_score);
-            assert!(!slot.content, "空格子的内容检查应为 false");
-        }
-        assert!(detection.booster().is_some());
-        assert!(detection.best_row_score > c.row_threshold);
-    }
-
-    #[test]
-    fn detect_home_reports_content_when_glyph_is_present() {
-        let c = cfg();
-        let glyph = ImageRect::new(40, 660, 40, 40);
-        let roi = canonical_roi(&home_cells(636), Some(glyph));
-        let detection = detect_home(&roi, &c, &seg());
-        assert!(detection.verified());
-        let first = detection.slots[0];
-        assert!(first.content, "有内容时内容检查应为 true");
-    }
-
-    #[test]
-    fn detect_home_fails_on_flat_frame() {
-        let c = cfg();
-        let mut flat = RgbaImage::new(c.canonical_w, c.canonical_h);
-        for (_, _, p) in flat.enumerate_pixels_mut() {
-            *p = Rgba([40, 42, 46, 255]);
-        }
-        let detection = detect_home(&flat, &c, &seg());
-        assert!(!detection.verified(), "无边框画面不得通过验证");
-        assert!(detection.slots.is_empty());
-    }
-
-    #[test]
-    fn detect_list_uses_dp_rows_with_min_gap() {
-        let c = cfg();
-        // 三行：120 / 233 / 346（行距 113，符合硬约束）
-        let mut cells = Vec::new();
-        for y in [120, 233, 346] {
-            for x in c.list_cols {
-                cells.push(ImageRect::new(x, y, c.slot_size, c.slot_size));
-            }
-        }
-        let roi = canonical_roi(&cells, None);
-        let detection = detect_list(&roi, &c);
-        assert!(detection.verified());
-        assert!(!detection.home);
-        assert_eq!(detection.rows, 3, "应选出 3 行");
-        assert_eq!(detection.slots.len(), 12);
-        let rows: Vec<i32> = detection
-            .slots
-            .iter()
-            .map(|s| s.rect.y)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        assert_eq!(rows.len(), 3);
-        for (row, y) in rows.iter().enumerate() {
-            assert!(
-                (y - [120, 233, 346][row]).abs() <= 3,
-                "第 {row} 行位置偏差过大：{y}"
-            );
-        }
-    }
-
-    #[test]
-    fn detect_list_rejects_rows_closer_than_min_gap() {
-        let c = cfg();
-        // 两行间距只有 40px（< row_min_dist）：DP 的硬约束只能选一行
-        let mut cells = Vec::new();
-        for y in [120, 160] {
-            for x in c.list_cols {
-                cells.push(ImageRect::new(x, y, c.slot_size, c.slot_size));
-            }
-        }
-        let roi = canonical_roi(&cells, None);
-        let detection = detect_list(&roi, &c);
-        assert_eq!(detection.rows, 1, "行距不足时必须只保留一行");
-    }
-
-    #[test]
-    fn detect_list_fails_on_flat_frame() {
-        let c = cfg();
-        let mut flat = RgbaImage::new(c.canonical_w, c.canonical_h);
-        for (_, _, p) in flat.enumerate_pixels_mut() {
-            *p = Rgba([35, 35, 38, 255]);
-        }
-        let detection = detect_list(&flat, &c);
-        assert!(!detection.verified());
-    }
-
-    #[test]
-    fn border_uniformity_penalizes_uneven_borders() {
-        let c = cfg();
-        // 同一条边上亮度差异极大 → 一致性惩罚
-        let mut img = RgbaImage::new(c.canonical_w, c.canonical_h);
-        for (_, _, p) in img.enumerate_pixels_mut() {
-            *p = Rgba([30, 33, 38, 255]);
-        }
-        let cell = ImageRect::new(77, 120, c.slot_size, c.slot_size);
-        for y in cell.y..cell.bottom() {
-            for x in cell.x..cell.right() {
-                let edge =
-                    x == cell.x || y == cell.y || x == cell.right() - 1 || y == cell.bottom() - 1;
-                let color = if edge {
-                    // 上半亮、下半暗：边框亮度极不均匀
-                    if y < cell.y + cell.h / 2 {
-                        [220, 220, 216, 255]
-                    } else {
-                        [60, 60, 58, 255]
-                    }
-                } else {
-                    [70, 74, 80, 255]
-                };
-                img.put_pixel(x as u32, y as u32, Rgba(color));
-            }
-        }
-        let luma = luma_of(&img);
-        let integral = IntegralImage::from_luma(&luma);
-        let factor = border_uniformity_factor(&integral, cell.x, cell.y, &c);
-        assert!(factor < 0.95, "不均匀边框必须被惩罚，实际系数 {factor}");
-        assert!(factor >= 0.4 - 1e-6);
-    }
-
-    #[test]
-    fn dp_selection_prefers_higher_total() {
-        let row = |y: i32, score: f32| RowCandidate {
-            y,
-            score,
-            slots: vec![SlotCandidate {
-                x: 0,
-                col: 0,
-                score,
-            }],
-        };
-        // 候选：120(0.9) / 233(0.8) / 260(0.85)，最小行距 113。
-        // 可行组合：{120,233}=1.70、{120,260}=1.75、{233,260} 被硬约束排除 → 必须选后者。
-        let candidates = vec![row(120, 0.9), row(233, 0.8), row(260, 0.85)];
-        let selected = select_rows_dp_hard(&candidates, 3, 113);
-        assert_eq!(selected.len(), 2);
-        let ys: Vec<i32> = selected.iter().map(|r| r.y).collect();
-        assert!(
-            ys.contains(&120) && ys.contains(&260),
-            "DP 应取总分最高的 120 + 260，实际 {ys:?}"
-        );
-        assert!(!ys.contains(&233));
-    }
-
-    #[test]
-    fn booster_content_requires_yellow() {
-        let c = cfg();
-        let rect = ImageRect::new(c.home_booster_x, 636, c.slot_size, c.slot_size);
-        // 纯灰：不算装备
-        let grey = {
-            let mut img = RgbaImage::new(c.canonical_w, c.canonical_h);
-            for (_, _, p) in img.enumerate_pixels_mut() {
-                *p = Rgba([70, 74, 80, 255]);
-            }
-            img
-        };
-        assert!(!booster_has_content(&grey, rect, &c, &seg()));
-        // 六边形内容区涂成 Booster 黄：算装备
-        let mut yellow = grey.clone();
-        for local_y in 0..rect.h {
-            for local_x in booster_hex_row_span(local_y, rect.w, rect.h, &c) {
-                yellow.put_pixel(
-                    (rect.x + local_x) as u32,
-                    (rect.y + local_y) as u32,
-                    Rgba([255, 222, 38, 255]),
-                );
-            }
-        }
-        assert!(booster_has_content(&yellow, rect, &c, &seg()));
-    }
-
-    #[test]
-    fn empty_detection_is_reported_not_panicking() {
-        let detection = GeometryDetection::empty(4);
-        assert!(!detection.verified());
-        assert!(detection.booster().is_none());
-    }
+    let half_width = BOOSTER_CONTENT_SIDE_LEN - dy / SQRT_3;
+    let width = width as f32;
+    let left = ((BOOSTER_HEX_CENTER_X - half_width) * width)
+        .floor()
+        .clamp(0.0, width) as u32;
+    let right = ((BOOSTER_HEX_CENTER_X + half_width) * width)
+        .ceil()
+        .clamp(0.0, width) as u32;
+    left..right
 }

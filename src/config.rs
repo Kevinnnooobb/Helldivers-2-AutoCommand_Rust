@@ -57,9 +57,6 @@ pub struct Config {
     /// 紧凑模式（游戏内配装预设 Overlay）：快捷键 / 透明度 / 位置
     #[serde(default)]
     pub compact_mode: crate::compact_mode::config::CompactModeConfig,
-    /// 战备图标视觉识别（参考坐标系 / 分割 / 模板 / 调试），所有阈值集中于此
-    #[serde(default)]
-    pub vision: crate::vision::config::VisionConfig,
 }
 
 fn default_key_bindings() -> HashMap<String, String> {
@@ -115,7 +112,6 @@ impl Default for Config {
             loadout_sync_cancel_hotkey: default_loadout_sync_cancel_hotkey(),
             loadout_sync: crate::loadout_sync::config::LoadoutSyncConfig::default(),
             compact_mode: crate::compact_mode::config::CompactModeConfig::default(),
-            vision: crate::vision::config::VisionConfig::default(),
         }
     }
 }

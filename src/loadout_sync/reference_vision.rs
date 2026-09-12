@@ -25,8 +25,8 @@ use crate::loadout_sync::types::ImageRect;
 /// 物品类型：Stratagem 与 Booster **必须分离**。
 ///
 /// 游戏里它们是两个不同的列表；混用会导致在错误的列表里搜索目标。
-/// 直接复用目录层的定义，避免两套 `ItemKind` 漂移。
-pub use crate::vision::reference_catalog::ItemKind;
+/// 直接复用参考实现的定义（`crate::item`），避免两套 `ItemKind` 漂移。
+pub use crate::item::ItemKind;
 
 /// 槽位类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
