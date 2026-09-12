@@ -3,7 +3,7 @@
 *.pdb
 panic.log
 /docs
-
+/hd2-preset-helper-0.1.4
 # local wiki page snapshots
 /Stratagems - The Helldivers Wiki.html
 /Stratagems - The Helldivers Wiki_files/

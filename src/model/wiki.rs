@@ -1,5 +1,5 @@
-use crate::H2ACApp;
 use crate::wiki_fetcher;
+use crate::H2ACApp;
 
 impl H2ACApp {
     pub fn start_wiki_fetch(&mut self) {

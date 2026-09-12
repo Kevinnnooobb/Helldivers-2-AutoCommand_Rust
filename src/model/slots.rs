@@ -3,9 +3,11 @@ use std::thread;
 
 use crate::config::{save_config, SLOT_COUNT};
 use crate::executor;
+use crate::stratagems::{
+    self, command_to_string, dir_to_arrow, PluginStratagem, StratagemRef, STRATAGEMS,
+};
 use crate::H2ACApp;
 use crate::LogKind;
-use crate::stratagems::{self, command_to_string, dir_to_arrow, PluginStratagem, StratagemRef, STRATAGEMS};
 
 /// 从 slot 的下一位起循环查找下一个空槽位（内置列表为空且非插件槽）
 fn next_free_slot(
@@ -28,7 +30,9 @@ fn write_base_slot(
     slot: usize,
     idx: usize,
 ) {
-    if slot >= SLOT_COUNT { return; }
+    if slot >= SLOT_COUNT {
+        return;
+    }
     slots[slot] = Some(idx);
     plugin_slots.remove(&slot);
     loadout[slot] = Some(idx);
@@ -41,7 +45,18 @@ impl H2ACApp {
         self.model.detail_slot = Some(self.model.armed.unwrap_or(slot));
     }
     pub fn execute_slot(&mut self, slot: usize) {
+        // 强化（Booster）等被动条目没有方向指令：执行它们只会按一下激活键，
+        // 既无意义又容易在游戏里误开指令面板，因此直接提示并跳过。
         if let Some(p) = self.model.plugin_slots.get(&slot) {
+            if p.command.is_empty() {
+                let name = p.name.clone();
+                let cat = p.category.clone();
+                self.log(
+                    LogKind::Info,
+                    format!("{name} [{cat}] 没有战备指令（强化/被动效果），无需呼叫"),
+                );
+                return;
+            }
             let name = p.name.clone();
             let log_msg = format!("执行 {} [{}] {}", p.name, p.model, p.command.join(""));
             let cmd = p.command.clone();
@@ -58,13 +73,24 @@ impl H2ACApp {
         if let Some(Some(idx)) = self.model.slots.get(slot) {
             if let Some(s) = STRATAGEMS.get(*idx) {
                 let name = s.name;
-                self.log(LogKind::Exec, format!("执行 {} [{}] {}", s.name, s.model, command_to_string(s.command)));
+                self.log(
+                    LogKind::Exec,
+                    format!(
+                        "执行 {} [{}] {}",
+                        s.name,
+                        s.model,
+                        command_to_string(s.command)
+                    ),
+                );
                 self.model.flash.insert(slot, 0.0);
                 let sc = s.clone();
                 let cg = self.model.config.clone();
                 thread::spawn(move || {
                     if let Err(e) = executor::execute_stratagem(&sc, &cg) {
-                        crate::util::log_to_file("exec_error.log", &format!("执行 {name} 失败: {e}"));
+                        crate::util::log_to_file(
+                            "exec_error.log",
+                            &format!("执行 {name} 失败: {e}"),
+                        );
                     }
                 });
             }
@@ -76,9 +102,15 @@ impl H2ACApp {
             self.log(LogKind::Info, format!("先点选一个槽位，再装入 {}", s.name));
             return;
         };
-        if let Some(idx) = STRATAGEMS.iter().position(|x| x.name == s.name && x.model == s.model) {
+        if let Some(idx) = STRATAGEMS
+            .iter()
+            .position(|x| x.name == s.name && x.model == s.model)
+        {
             self.set_slot(slot, idx);
-            self.log(LogKind::Info, format!("槽位 {} ← {} [{}]", slot + 1, s.name, s.model));
+            self.log(
+                LogKind::Info,
+                format!("槽位 {} ← {} [{}]", slot + 1, s.name, s.model),
+            );
             self.advance_armed(slot);
         }
     }
@@ -93,7 +125,10 @@ impl H2ACApp {
                 };
                 self.model.plugin_slots.insert(slot, (*p).clone());
                 self.model.slots[slot] = Some(crate::stratagems::PLUGIN_SLOT_MARK);
-                self.log(LogKind::Info, format!("槽位 {} <- {} (插件)", slot + 1, p.name));
+                self.log(
+                    LogKind::Info,
+                    format!("槽位 {} <- {} (插件)", slot + 1, p.name),
+                );
                 self.advance_armed(slot);
             }
         }
@@ -111,14 +146,20 @@ impl H2ACApp {
     }
 
     pub fn clear_slot(&mut self, slot: usize) {
-        if slot >= SLOT_COUNT { return; }
+        if slot >= SLOT_COUNT {
+            return;
+        }
         self.model.slots[slot] = None;
         self.model.plugin_slots.remove(&slot);
         self.model.config.loadout[slot] = None;
         self.model.config.slot_hotkeys.remove(&slot.to_string());
         // 状态一致性：被清除的槽位不能仍是武装/详情槽位
-        if self.model.armed == Some(slot) { self.model.armed = None; }
-        if self.model.detail_slot == Some(slot) { self.model.detail_slot = None; }
+        if self.model.armed == Some(slot) {
+            self.model.armed = None;
+        }
+        if self.model.detail_slot == Some(slot) {
+            self.model.detail_slot = None;
+        }
         save_config(&self.model.config);
         self.sync_hotkey_map();
     }
@@ -143,12 +184,16 @@ impl H2ACApp {
     }
 
     pub fn slot_name(&self, idx: usize) -> Option<&str> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { return Some(&p.name); }
+        if let Some(p) = self.model.plugin_slots.get(&idx) {
+            return Some(&p.name);
+        }
         self.base_slot(idx).map(|s| s.name)
     }
 
     pub fn slot_icon(&self, idx: usize) -> Option<&str> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { return Some(&p.icon); }
+        if let Some(p) = self.model.plugin_slots.get(&idx) {
+            return Some(&p.icon);
+        }
         self.base_slot(idx).map(|s| s.icon)
     }
 
@@ -156,21 +201,26 @@ impl H2ACApp {
         if let Some(p) = self.model.plugin_slots.get(&idx) {
             return p.command.iter().map(|c| dir_to_arrow(c.as_str())).collect();
         }
-        self.base_slot(idx).map(|s| s.command.to_vec()).unwrap_or_default()
+        self.base_slot(idx)
+            .map(|s| s.command.to_vec())
+            .unwrap_or_default()
     }
 
     pub fn slot_category(&self, idx: usize) -> Option<&str> {
-        if let Some(p) = self.model.plugin_slots.get(&idx) { return Some(&p.category); }
+        if let Some(p) = self.model.plugin_slots.get(&idx) {
+            return Some(&p.category);
+        }
         self.base_slot(idx).map(|s| s.category)
     }
 
     /// 槽位内的内置战备（插件槽位或越界索引返回 None）
     fn base_slot(&self, idx: usize) -> Option<&'static crate::stratagems::Stratagem> {
         let si = self.model.slots.get(idx).copied().flatten()?;
-        if si == crate::stratagems::PLUGIN_SLOT_MARK { return None; }
+        if si == crate::stratagems::PLUGIN_SLOT_MARK {
+            return None;
+        }
         STRATAGEMS.get(si)
     }
-
 }
 
 #[cfg(test)]
@@ -206,7 +256,9 @@ mod tests {
         let mut slots = vec![None; SLOT_COUNT];
         slots[9] = Some(1);
         assert_eq!(next_free_slot(&slots, &HashMap::new(), 9), Some(0));
-        for s in slots.iter_mut() { *s = Some(1); }
+        for s in slots.iter_mut() {
+            *s = Some(1);
+        }
         assert_eq!(next_free_slot(&slots, &HashMap::new(), 0), None);
     }
 

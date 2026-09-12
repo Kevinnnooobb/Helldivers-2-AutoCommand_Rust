@@ -10,6 +10,12 @@ pub const WIKI_PLUGIN_FILE: &str = "_wiki.json";
 pub const WIKI_PLUGIN_ID: &str = "_wiki";
 /// 战备的 runtime 来源标记：自动获取的页面数据
 pub const WIKI_SOURCE: &str = WIKI_PLUGIN_ID;
+/// 强化（Booster）自动获取结果的持久化文件名（plugins/ 目录）
+pub const BOOSTER_PLUGIN_FILE: &str = "_boosters.json";
+/// 强化自动获取结果插件清单的 id
+pub const BOOSTER_PLUGIN_ID: &str = "_boosters";
+/// 强化的 runtime 来源标记：自动获取的页面数据（helldivers.wiki.gg/wiki/Boosters）
+pub const BOOSTER_SOURCE: &str = BOOSTER_PLUGIN_ID;
 /// 旧版缓存文件名（迁移时删除；旧格式带 NEW (Wiki) 分类与 (Wiki) 名称后缀）
 const LEGACY_WIKI_PLUGIN_FILE: &str = "_wiki_new.json";
 
@@ -17,9 +23,19 @@ pub fn plugins_dir() -> PathBuf {
     util::app_dir().join("plugins")
 }
 
-/// Wiki 拉取结果文件路径
+/// Wiki 拉取结果文件路径（战备）
 pub fn wiki_plugin_path() -> PathBuf {
     plugins_dir().join(WIKI_PLUGIN_FILE)
+}
+
+/// 强化拉取结果文件路径
+pub fn booster_plugin_path() -> PathBuf {
+    plugins_dir().join(BOOSTER_PLUGIN_FILE)
+}
+
+/// 该来源是否属于「在线获取的数据」（战备或强化）：重命名/替换时需要一起处理
+pub fn is_wiki_source(source: &str) -> bool {
+    source == WIKI_SOURCE || source == BOOSTER_SOURCE
 }
 
 /// 扫描 plugins/ 目录，加载所有启用的插件
@@ -44,9 +60,10 @@ pub fn load_all() -> Vec<PluginStratagem> {
         }
 
         // 迁移：删除旧版缓存 _wiki_new.json（旧格式带 NEW (Wiki) 分类与 (Wiki) 后缀）
-        let is_wiki = path
+        let is_wiki = path.file_stem().is_some_and(|stem| stem == WIKI_PLUGIN_ID);
+        let is_boosters = path
             .file_stem()
-            .is_some_and(|stem| stem == WIKI_PLUGIN_ID);
+            .is_some_and(|stem| stem == BOOSTER_PLUGIN_ID);
         let is_legacy = path
             .file_name()
             .is_some_and(|name| name == LEGACY_WIKI_PLUGIN_FILE);
@@ -72,6 +89,8 @@ pub fn load_all() -> Vec<PluginStratagem> {
         for mut s in manifest.stratagems {
             if is_wiki {
                 s.source = WIKI_SOURCE.to_string();
+            } else if is_boosters {
+                s.source = BOOSTER_SOURCE.to_string();
             }
             stratagems.push(s);
         }

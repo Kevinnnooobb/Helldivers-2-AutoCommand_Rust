@@ -1,10 +1,10 @@
-use eframe::egui::{self, Context, Key, Ui, Vec2};
 use crate::plugin;
 use crate::state::CreatorTab;
 use crate::theme::*;
 use crate::widgets::*;
 use crate::wiki_fetcher;
 use crate::H2ACApp;
+use eframe::egui::{self, Context, Key, Ui, Vec2};
 
 pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
     if !app.creator.open {
@@ -14,8 +14,16 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
     if app.creator.sequence_recording {
         ctx.input(|i| {
             for ev in &i.events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
-                    if modifiers.ctrl || modifiers.alt { continue; }
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = ev
+                {
+                    if modifiers.ctrl || modifiers.alt {
+                        continue;
+                    }
                     let dir: Option<&str> = match key {
                         Key::ArrowUp | Key::W => Some("↑"),
                         Key::ArrowDown | Key::S => Some("↓"),
@@ -31,7 +39,8 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                         }
                         Key::Enter => {
                             app.creator.sequence_recording = false;
-                            if !app.creator.stratagem_sequence.is_empty() && !app.creator.stratagem_name.is_empty()
+                            if !app.creator.stratagem_sequence.is_empty()
+                                && !app.creator.stratagem_name.is_empty()
                             {
                                 app.creator.saved_entries.push((
                                     app.creator.stratagem_name.clone(),
@@ -65,12 +74,16 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                         app.creator.tab == CreatorTab::Fetch,
                         egui::RichText::new("拉取数据").font(m.hud(13.0)),
                     );
-                    if tab_fetch.clicked() { app.creator.tab = CreatorTab::Fetch; }
+                    if tab_fetch.clicked() {
+                        app.creator.tab = CreatorTab::Fetch;
+                    }
                     let tab_create = ui.selectable_label(
                         app.creator.tab == CreatorTab::Create,
                         egui::RichText::new("创建战备").font(m.hud(13.0)),
                     );
-                    if tab_create.clicked() { app.creator.tab = CreatorTab::Create; }
+                    if tab_create.clicked() {
+                        app.creator.tab = CreatorTab::Create;
+                    }
                 });
                 ui.add_space(8.0);
 
@@ -93,18 +106,32 @@ pub fn render_plugin_creator(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
 }
 
 pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
-    ui.label(egui::RichText::new("自动获取最新战备数据").font(m.hud_b(14.0)).color(GOLD));
+    ui.label(
+        egui::RichText::new("自动获取最新战备数据")
+            .font(m.hud_b(14.0))
+            .color(GOLD),
+    );
     ui.add_space(6.0);
-    ui.label(egui::RichText::new(format!("数据源: {}", wiki_fetcher::STRATAGEM_DATA_URL))
-        .font(m.hud(9.0)).color(TEXT_DIM));
-    ui.label(egui::RichText::new("新增战备按页面分类直接入库，不再附加 New/Wiki 标签")
-        .font(m.hud(9.0)).color(TEXT_DIM));
+    ui.label(
+        egui::RichText::new(format!("数据源: {}", wiki_fetcher::STRATAGEM_DATA_URL))
+            .font(m.hud(9.0))
+            .color(TEXT_DIM),
+    );
+    ui.label(
+        egui::RichText::new("新增战备按页面分类直接入库，不再附加 New/Wiki 标签")
+            .font(m.hud(9.0))
+            .color(TEXT_DIM),
+    );
     ui.add_space(8.0);
 
     let fetching = app.network_busy();
 
     if fetching {
-        ui.label(egui::RichText::new(&app.wiki.fetch_status).font(m.hud(13.0)).color(TEXT_SUB));
+        ui.label(
+            egui::RichText::new(&app.wiki.fetch_status)
+                .font(m.hud(13.0))
+                .color(TEXT_SUB),
+        );
         ui.add_space(4.0);
         let spinner = if app.wiki.fetch_rx.is_some() {
             "拉取中…"
@@ -118,16 +145,22 @@ pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
         } else {
             "尚未拉取过数据".into()
         };
-        ui.label(egui::RichText::new(&status).font(m.hud(12.0)).color(TEXT_SUB));
+        ui.label(
+            egui::RichText::new(&status)
+                .font(m.hud(12.0))
+                .color(TEXT_SUB),
+        );
     }
 
     ui.add_space(10.0);
 
     ui.horizontal(|ui| {
-        if hud_button(ui, "拉取数据", Vec2::new(140.0, 30.0), m, GOLD, false).clicked() && !fetching {
+        if hud_button(ui, "拉取数据", Vec2::new(140.0, 30.0), m, GOLD, false).clicked() && !fetching
+        {
             app.start_wiki_fetch();
         }
-        if app.wiki.cache_exists && !fetching
+        if app.wiki.cache_exists
+            && !fetching
             && hud_button(ui, "清除缓存", Vec2::new(100.0, 30.0), m, DANGER, true).clicked()
         {
             let _ = std::fs::remove_file(crate::plugin::wiki_plugin_path());
@@ -138,30 +171,47 @@ pub fn render_fetch_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
 
     if !app.creator.status.is_empty() {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(&app.creator.status).font(m.hud(11.0)).color(OK));
+        ui.label(
+            egui::RichText::new(&app.creator.status)
+                .font(m.hud(11.0))
+                .color(OK),
+        );
     }
 }
 
 pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
-    ui.label(egui::RichText::new("创建战备插件").font(m.hud_b(14.0)).color(GOLD));
+    ui.label(
+        egui::RichText::new("创建战备插件")
+            .font(m.hud_b(14.0))
+            .color(GOLD),
+    );
     ui.add_space(6.0);
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("插件名:").font(m.hud(13.0)));
-        ui.add(egui::TextEdit::singleline(&mut app.creator.plugin_name)
-            .font(m.hud(13.0)).desired_width(160.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.creator.plugin_name)
+                .font(m.hud(13.0))
+                .desired_width(160.0),
+        );
         ui.add_space(16.0);
         ui.label(egui::RichText::new("部门:").font(m.hud(13.0)));
-        ui.add(egui::TextEdit::singleline(&mut app.creator.department)
-            .font(m.hud(13.0)).desired_width(120.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.creator.department)
+                .font(m.hud(13.0))
+                .desired_width(120.0),
+        );
     });
 
     ui.add_space(8.0);
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("名称:").font(m.hud(13.0)));
-        ui.add(egui::TextEdit::singleline(&mut app.creator.stratagem_name)
-            .font(m.hud(13.0)).desired_width(120.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.creator.stratagem_name)
+                .font(m.hud(13.0))
+                .desired_width(120.0),
+        );
         ui.add_space(8.0);
 
         if app.creator.sequence_recording {
@@ -176,8 +226,11 @@ pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
         }
         ui.add_space(8.0);
         ui.label(egui::RichText::new("图标:").font(m.hud(13.0)));
-        ui.add(egui::TextEdit::singleline(&mut app.creator.icon_key)
-            .font(m.hud(13.0)).desired_width(100.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.creator.icon_key)
+                .font(m.hud(13.0))
+                .desired_width(100.0),
+        );
     });
 
     let seq_str = app.creator.stratagem_sequence.join(" ");
@@ -188,22 +241,35 @@ pub fn render_create_tab(app: &mut H2ACApp, ui: &mut Ui, m: &UiMetrics) {
     } else {
         "点击录制后按方向键…".into()
     };
-    ui.label(egui::RichText::new(&status).font(m.hud(12.0)).color(TEXT_SUB));
+    ui.label(
+        egui::RichText::new(&status)
+            .font(m.hud(12.0))
+            .color(TEXT_SUB),
+    );
 
     ui.add_space(8.0);
 
-    ui.label(egui::RichText::new("已保存条目:").font(m.hud_b(12.0)).color(TEXT));
+    ui.label(
+        egui::RichText::new("已保存条目:")
+            .font(m.hud_b(12.0))
+            .color(TEXT),
+    );
     let mut remove_idx = None;
     for (i, (name, seq, icon)) in app.creator.saved_entries.iter().enumerate() {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{}. {} [{}] ({})", i+1, name, seq.join(""), icon))
-                .font(m.hud(11.0)).color(TEXT_SUB));
+            ui.label(
+                egui::RichText::new(format!("{}. {} [{}] ({})", i + 1, name, seq.join(""), icon))
+                    .font(m.hud(11.0))
+                    .color(TEXT_SUB),
+            );
             if hud_button(ui, "×", Vec2::new(22.0, 20.0), m, DANGER, true).clicked() {
                 remove_idx = Some(i);
             }
         });
     }
-    if let Some(i) = remove_idx { app.creator.saved_entries.remove(i); }
+    if let Some(i) = remove_idx {
+        app.creator.saved_entries.remove(i);
+    }
 
     ui.add_space(10.0);
 
@@ -228,19 +294,27 @@ pub fn save_plugin_from_creator(app: &mut H2ACApp) {
         return;
     }
 
-    let stratagems: Vec<crate::stratagems::PluginStratagem> = app.creator.saved_entries.iter().map(|(n, seq, icon)| {
-        crate::stratagems::PluginStratagem {
-            name: n.clone(),
-            category: app.creator.department.clone(),
-            model: String::new(),
-            // 录制器产出箭头，规范化为插件清单的英文方向格式
-            command: seq.iter().map(|d| crate::stratagems::arrow_to_dir(d).to_string()).collect(),
-            description: String::new(),
-            icon: icon.clone(),
-            source: String::new(),
-            icon_url: None,
-        }
-    }).collect();
+    let stratagems: Vec<crate::stratagems::PluginStratagem> = app
+        .creator
+        .saved_entries
+        .iter()
+        .map(|(n, seq, icon)| {
+            crate::stratagems::PluginStratagem {
+                name: n.clone(),
+                category: app.creator.department.clone(),
+                model: String::new(),
+                // 录制器产出箭头，规范化为插件清单的英文方向格式
+                command: seq
+                    .iter()
+                    .map(|d| crate::stratagems::arrow_to_dir(d).to_string())
+                    .collect(),
+                description: String::new(),
+                icon: icon.clone(),
+                source: String::new(),
+                icon_url: None,
+            }
+        })
+        .collect();
 
     let manifest = crate::stratagems::PluginManifest {
         id: name.to_lowercase().replace(' ', "_"),
@@ -261,7 +335,9 @@ pub fn save_plugin_from_creator(app: &mut H2ACApp) {
                 reload_plugins(app);
             }
         }
-        Err(e) => { app.creator.status = format!("序列化失败: {e}"); }
+        Err(e) => {
+            app.creator.status = format!("序列化失败: {e}");
+        }
     }
 }
 

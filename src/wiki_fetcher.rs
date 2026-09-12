@@ -31,6 +31,8 @@ use std::time::Duration;
 
 /// 权威数据源：helldivers.wiki.gg 的战备总览页
 pub const STRATAGEM_DATA_URL: &str = "https://helldivers.wiki.gg/wiki/Stratagems";
+/// 权威数据源：helldivers.wiki.gg 的强化（Booster）页面
+pub const BOOSTER_DATA_URL: &str = "https://helldivers.wiki.gg/wiki/Boosters";
 
 const API_ROOT: &str = "https://helldivers.wiki.gg/api.php";
 const USER_AGENT: &str =
@@ -136,7 +138,12 @@ fn http_get(agent: &ureq::Agent, url: &str) -> Result<String, String> {
 }
 
 fn api_page_url() -> String {
-    format!("{API_ROOT}?action=parse&page=Stratagems&prop=text&format=json&formatversion=2")
+    api_page_url_for("Stratagems")
+}
+
+/// 任意页面的 MediaWiki parse API 地址（战备页 / 强化页共用）
+fn api_page_url_for(page: &str) -> String {
+    format!("{API_ROOT}?action=parse&page={page}&prop=text&format=json&formatversion=2")
 }
 
 /// 从 MediaWiki action=parse 的 JSON 响应中取出 content-only HTML
@@ -1082,6 +1089,7 @@ const ICON_FILE_BASE: &str = "https://helldivers.wiki.gg/images/";
 /// 2. hint 是带图片扩展名的文件名（如 "Eagle Rearm Stratagem Icon Background.svg"）
 ///    → 拼成 wiki /images/ 直链；
 /// 3. 兜底：按页面惯例 "<名称> Stratagem Icon Background.svg" 生成候选地址。
+///
 /// 本地已有该 icon 键时不会触发下载，因此候选地址允许保守宽松。
 fn icon_download_url(name: &str, hint: &str) -> Option<String> {
     let t = hint.trim();
@@ -1157,6 +1165,8 @@ fn icon_hint_key(hint: &str) -> Option<String> {
     for suffix in [
         "stratagem icon background",
         "stratagem icon",
+        "booster icon background",
+        "booster icon",
         "icon background",
         "icon",
     ] {
@@ -1174,6 +1184,148 @@ fn icon_hint_key(hint: &str) -> Option<String> {
     }
 }
 
+// ─── 强化（Booster）页面解析 ───
+//
+// 页面结构（helldivers.wiki.gg/wiki/Boosters）：
+//   <table class="wikitable sortable">
+//     <tr><th>Icon</th><th>Booster</th><th>Description</th><th>Warbond</th><th>Price</th></tr>
+//     <tr><td><img alt="… Booster Icon.svg" src="/images/…_Booster_Icon.svg?xxxx"></td>
+//         <td><a title="…">名称</a></td><td>描述</td><td>债券</td><td>价格</td></tr>
+//
+// 与战备表格的区别：没有 Stratagem Code 列（强化没有方向指令），
+// 因此用「表头含 Booster + Description」+「行有 5 个单元格且首格是图片」来识别表格，
+// 同页的 tabs 导航表与页脚表格都会被排除。
+
+/// 解析强化表格，产出 PluginStratagem（category = "Boosters"，command 为空）。
+pub fn parse_boosters_html(html: &str) -> Result<Vec<PluginStratagem>, String> {
+    let cleaned = strip_non_content(html);
+    let mut out: Vec<PluginStratagem> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for table in extract_tables(&cleaned) {
+        if !booster_table_qualifies(&table.html) {
+            continue;
+        }
+        for row in split_booster_rows(&table.html) {
+            let cells = split_cells(&row);
+            if cells.len() < 3 {
+                continue;
+            }
+            let Some(name) = non_file_anchor_text(&cells[1]).or_else(|| plain_cell_text(&cells[1]))
+            else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let icon_hint = img_alt_text(&cells[0])
+                .or_else(|| img_src_text(&cells[0]))
+                .unwrap_or_default();
+            let description = plain_cell_text(&cells[2]).unwrap_or_default();
+            let warbond = cells
+                .get(3)
+                .and_then(|c| plain_cell_text(c))
+                .unwrap_or_default();
+            let icon = icon_key(&name, &icon_hint);
+            let item = PluginStratagem {
+                name: name.clone(),
+                category: crate::stratagems::CAT_BOOSTERS.to_string(),
+                // 债券名放进 model：详情面板会显示「<债券> · <分类>」
+                model: warbond,
+                // 强化没有呼叫指令：留空，避免被执行器当作战备注入按键
+                command: Vec::new(),
+                description,
+                icon,
+                source: crate::plugin::BOOSTER_SOURCE.to_string(),
+                // 优先用页面上 img 的真实地址（含 <hash> 的 src 会被规范化），
+                // 拿不到时再按 /images/<文件名> 惯例推导
+                icon_url: img_src_text(&cells[0])
+                    .and_then(|s| normalize_icon_url(&s))
+                    .or_else(|| icon_download_url(&name, &icon_hint)),
+            };
+            if seen.insert(item.name.to_lowercase()) {
+                out.push(item);
+            }
+        }
+    }
+
+    if out.is_empty() {
+        return Err("未在页面中找到强化（Booster）表格".into());
+    }
+    Ok(out)
+}
+
+/// 是否是强化表格：前两行（表头可能有 thead 包裹）里同时含 Booster 与 Description；
+/// 页面上的 tabs 导航表、页脚表格因此都会被排除。
+fn booster_table_qualifies(table: &str) -> bool {
+    let mut cursor = 0usize;
+    for _ in 0..2 {
+        let Some(open) = find_open_tag_ci(table, "tr", cursor) else {
+            break;
+        };
+        let Some(start) = find_tag_end(table, open) else {
+            break;
+        };
+        let Some(end) = find_tag_ci(table, "/tr", start) else {
+            break;
+        };
+        let lower = table[start..end].to_lowercase();
+        if lower.contains("booster") && lower.contains("description") {
+            return true;
+        }
+        cursor = end + 3;
+    }
+    false
+}
+
+/// 只切出数据行（表头行含 <th>，直接跳过）。
+fn split_booster_rows(table: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(open) = find_open_tag_ci(table, "tr", cursor) {
+        let Some(content_start) = find_tag_end(table, open) else {
+            break;
+        };
+        let Some(close) = find_tag_ci(table, "/tr", content_start) else {
+            break;
+        };
+        let row = &table[content_start..close];
+        if !row.to_lowercase().contains("<th") {
+            rows.push(row.to_string());
+        }
+        cursor = close + 3;
+    }
+    rows
+}
+
+/// 强化图标地址：优先用 img 的 src（相对路径补全为 wiki 绝对地址），
+/// 其次按 "/images/<文件名>.svg" 惯例推导。
+fn img_src_text(cell: &str) -> Option<String> {
+    let img_start = find_open_tag_ci(cell, "img", 0)?;
+    let img_end = find_tag_end(cell, img_start)?;
+    let tag = &cell[img_start..img_end];
+    extract_attr(tag, "src")
+}
+
+fn normalize_icon_url(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    // 去掉 MediaWiki 的缓存破坏参数（?7aa15a）
+    let base = t.split('?').next().unwrap_or(t);
+    if base.starts_with("http://") || base.starts_with("https://") {
+        return Some(base.to_string());
+    }
+    if base.starts_with("//") {
+        return Some(format!("https:{base}"));
+    }
+    if base.starts_with('/') {
+        return Some(format!("https://helldivers.wiki.gg{base}"));
+    }
+    None
+}
+
 // ─── 异步刷新接口 ───
 
 pub struct FetchProgress {
@@ -1182,28 +1334,141 @@ pub struct FetchProgress {
     pub result: Option<Result<Vec<PluginStratagem>, String>>,
 }
 
+/// 从远端拉取并解析强化数据（在线数据源；页面上没有强化表格时返回 Err）
+pub fn fetch_boosters(
+    on_progress: impl Fn(String) + Send + 'static,
+    on_done: impl FnOnce(Result<Vec<PluginStratagem>, String>) + Send + 'static,
+) {
+    thread::spawn(move || {
+        let agent = build_agent();
+        on_progress("正在连接强化页面…".into());
+        let mut last_error: Option<String> = None;
+        let mut items: Vec<PluginStratagem> = Vec::new();
+
+        match http_get(&agent, BOOSTER_DATA_URL) {
+            Ok(html) => match parse_boosters_html(&html) {
+                Ok(parsed) => items = parsed,
+                Err(e) => last_error = Some(e),
+            },
+            Err(e) => last_error = Some(e),
+        }
+
+        // 回退：MediaWiki parse API（结构相同）
+        if items.is_empty() {
+            on_progress("强化页面直连失败，改用 MediaWiki API…".into());
+            let url = api_page_url_for("Boosters");
+            match http_get(&agent, &url).and_then(|body| extract_api_html(&body)) {
+                Ok(html) => match parse_boosters_html(&html) {
+                    Ok(parsed) => items = parsed,
+                    Err(e) => last_error = Some(e),
+                },
+                Err(e) => last_error = Some(e),
+            }
+        }
+
+        if items.is_empty() {
+            on_done(Err(
+                last_error.unwrap_or_else(|| "未在页面中找到强化数据".into())
+            ));
+            return;
+        }
+        on_done(Ok(items));
+    });
+}
+
+/// 启动「战备 + 强化」两页的拉取：先战备页，再强化页，最后一次性回传合并结果。
+///
+/// 强化失败不会拖垮战备结果（只发一条警告进度），战备失败也不会阻止强化入库。
 pub fn start_fetch() -> (mpsc::Receiver<FetchProgress>, bool) {
     let (tx, rx) = mpsc::channel();
-    let tx_progress = tx.clone();
-    let tx_done = tx;
-    let has_cache = crate::plugin::wiki_plugin_path().exists();
+    let has_cache =
+        crate::plugin::wiki_plugin_path().exists() || crate::plugin::booster_plugin_path().exists();
 
-    fetch_stratagems(
-        move |msg| {
-            let _ = tx_progress.send(FetchProgress {
-                stage: msg,
+    let tx_progress = tx.clone();
+    let tx_boosters = tx.clone();
+    thread::spawn(move || {
+        let (strat_tx, strat_rx) = mpsc::channel::<FetchProgress>();
+        let progress = tx_progress.clone();
+        fetch_stratagems(
+            move |msg| {
+                let _ = progress.send(FetchProgress {
+                    stage: msg,
+                    done: false,
+                    result: None,
+                });
+            },
+            move |result| {
+                let _ = strat_tx.send(FetchProgress {
+                    stage: String::new(),
+                    done: true,
+                    result: Some(result),
+                });
+            },
+        );
+
+        let mut items: Vec<PluginStratagem> = Vec::new();
+        let mut strat_error: Option<String> = None;
+        if let Ok(done) = strat_rx.recv() {
+            match done.result {
+                Some(Ok(parsed)) => items = parsed,
+                Some(Err(e)) => strat_error = Some(e),
+                None => {}
+            }
+        }
+        while let Ok(p) = strat_rx.try_recv() {
+            let _ = tx_progress.send(p);
+        }
+
+        // 强化页：独立失败域
+        let (boost_tx, boost_rx) = mpsc::channel::<FetchProgress>();
+        let progress = tx_progress.clone();
+        fetch_boosters(
+            move |msg| {
+                let _ = progress.send(FetchProgress {
+                    stage: msg,
+                    done: false,
+                    result: None,
+                });
+            },
+            move |result| {
+                let _ = boost_tx.send(FetchProgress {
+                    stage: String::new(),
+                    done: true,
+                    result: Some(result),
+                });
+            },
+        );
+        let mut booster_error: Option<String> = None;
+        if let Ok(done) = boost_rx.recv() {
+            match done.result {
+                Some(Ok(parsed)) => items.extend(parsed),
+                Some(Err(e)) => booster_error = Some(e),
+                None => {}
+            }
+        }
+        while let Ok(p) = boost_rx.try_recv() {
+            let _ = tx_progress.send(p);
+        }
+
+        if let Some(e) = booster_error {
+            let _ = tx_boosters.send(FetchProgress {
+                stage: format!("强化数据获取失败：{e}"),
                 done: false,
                 result: None,
             });
-        },
-        move |result| {
-            let _ = tx_done.send(FetchProgress {
-                stage: String::new(),
-                done: true,
-                result: Some(result),
-            });
-        },
-    );
+        }
+
+        let result = if items.is_empty() {
+            Err(strat_error.unwrap_or_else(|| "未在页面中找到战备或强化数据".into()))
+        } else {
+            Ok(items)
+        };
+        let _ = tx_boosters.send(FetchProgress {
+            stage: String::new(),
+            done: true,
+            result: Some(result),
+        });
+    });
 
     (rx, has_cache)
 }
@@ -1248,6 +1513,109 @@ mod tests {
         // 不再附加任何 new / wiki 标签
         assert!(items.iter().all(|i| !i.name.contains("(Wiki)")));
         assert!(items.iter().all(|i| i.category != "NEW (Wiki)"));
+    }
+
+    const BOOSTER_SAMPLE: &str = include_str!("fixtures/wiki_boosters.html");
+
+    #[test]
+    fn parse_boosters_fixture() {
+        // 真实页面结构夹具（helldivers.wiki.gg/wiki/Boosters）：18 条强化
+        let items = parse_boosters_html(BOOSTER_SAMPLE).expect("强化解析失败");
+        assert_eq!(items.len(), 18, "强化条数不符: {}", items.len());
+
+        let first = &items[0];
+        assert_eq!(first.name, "Hellpod Space Optimization");
+        assert_eq!(first.category, crate::stratagems::CAT_BOOSTERS);
+        assert_eq!(first.source, crate::plugin::BOOSTER_SOURCE);
+        // 强化没有方向指令：不得被执行器当作战备注入按键
+        assert!(first.command.is_empty());
+        // 描述来自页面 Description 列
+        assert!(
+            first.description.contains("fully stocked on Ammo"),
+            "描述缺失: {:?}",
+            first.description
+        );
+        assert!(!first.description.contains('<'), "描述里残留了 HTML 标签");
+        // 图标：键名去掉 Booster Icon 后缀，地址指向 wiki 的 /images 直链
+        assert_eq!(first.icon, "hellpod_space_optimization");
+        let url = first.icon_url.clone().expect("缺少图标地址");
+        assert!(
+            url.starts_with("https://helldivers.wiki.gg/images/"),
+            "{url}"
+        );
+        assert!(
+            url.ends_with("Hellpod_Space_Optimization_Booster_Icon.svg"),
+            "{url}"
+        );
+        // 缓存破坏参数必须被去掉
+        assert!(!url.contains('?'), "{url}");
+        // 债券名放进 model（详情面板展示来源）
+        assert_eq!(first.model, "Helldivers Mobilize");
+    }
+
+    #[test]
+    fn booster_names_and_icons_cover_the_page() {
+        let items = parse_boosters_html(BOOSTER_SAMPLE).unwrap();
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        for expected in [
+            "Vitality Enhancement",
+            "UAV Recon Booster",
+            "Stamina Enhancement",
+            "Muscle Enhancement",
+            "Increased Reinforcement Budget",
+            "Flexible Reinforcement Budget",
+            "Localization Confusion",
+            "Expert Extraction Pilot",
+            "Motivational Shocks",
+            "Experimental Infusion",
+            "Firebomb Hellpods",
+            "Dead Sprint",
+            "Armed Resupply Pods",
+            "Sample Extricator",
+            "Sample Scanner",
+            "Stun Pods",
+            "Concealed Insertion",
+        ] {
+            assert!(names.contains(&expected), "缺少强化: {expected}");
+        }
+        // 每条都必须有描述与图标；键名不得残留 booster_icon 后缀
+        for item in &items {
+            assert!(
+                !item.description.trim().is_empty(),
+                "{} 没有描述",
+                item.name
+            );
+            assert!(item.icon_url.is_some(), "{} 没有图标地址", item.name);
+            assert!(
+                !item.icon.contains("booster_icon"),
+                "{} 图标键异常: {}",
+                item.name,
+                item.icon
+            );
+            assert_eq!(item.category, crate::stratagems::CAT_BOOSTERS);
+        }
+    }
+
+    #[test]
+    fn booster_parser_ignores_navigation_tables() {
+        // 同一页面上还有 tabs 导航表（无 Booster/Description 表头）与页脚表格
+        let items = parse_boosters_html(BOOSTER_SAMPLE).unwrap();
+        assert!(items.iter().all(|i| i.name != "Helldivers 1"));
+        assert!(items.iter().all(|i| i.name != "Helldivers 2"));
+        assert!(parse_boosters_html("<table><tr><td>nothing</td></tr></table>").is_err());
+    }
+
+    #[test]
+    fn booster_icon_url_normalizes_mediawiki_src() {
+        assert_eq!(
+            normalize_icon_url("/images/Dead_Sprint_Booster_Icon.svg?f12c0f").as_deref(),
+            Some("https://helldivers.wiki.gg/images/Dead_Sprint_Booster_Icon.svg")
+        );
+        assert_eq!(
+            normalize_icon_url("//helldivers.wiki.gg/images/a.svg").as_deref(),
+            Some("https://helldivers.wiki.gg/images/a.svg")
+        );
+        assert_eq!(normalize_icon_url("   "), None);
     }
 
     #[test]
@@ -1339,6 +1707,98 @@ mod tests {
         eprintln!("分类分布: {counts:?}");
     }
 
+    /// 联网验证：真实 Boosters 页面必须解析出完整的强化列表。
+    /// 默认 ignore（CI 不联网），本地用 `cargo test -- --ignored fetch_live_boosters` 运行。
+    #[test]
+    #[ignore]
+    fn fetch_live_boosters_page_parses() {
+        let agent = build_agent();
+        let html = http_get(&agent, BOOSTER_DATA_URL).expect("拉取强化页面失败");
+        let items = parse_boosters_html(&html).expect("解析强化页面失败");
+        assert!(items.len() >= 18, "强化条数偏少: {}", items.len());
+        for item in &items {
+            assert_eq!(item.category, crate::stratagems::CAT_BOOSTERS);
+            assert_eq!(item.source, crate::plugin::BOOSTER_SOURCE);
+            assert!(item.command.is_empty(), "{} 不应有方向指令", item.name);
+            assert!(
+                !item.description.trim().is_empty(),
+                "{} 缺少描述",
+                item.name
+            );
+            let url = item.icon_url.as_deref().unwrap_or_default();
+            assert!(!url.is_empty(), "{} 缺少图标地址", item.name);
+        }
+        eprintln!("线上强化页面解析出 {} 条", items.len());
+        for item in items.iter().take(5) {
+            eprintln!("  {} | {} | {}", item.name, item.icon, item.description);
+        }
+    }
+
+    /// 联网验证：所有强化图标都能下载并栅格化为 PNG（走真实 SVG → PNG 链路）。
+    #[test]
+    #[ignore]
+    fn fetch_live_booster_icons_rasterize() {
+        let agent = build_agent();
+        let html = http_get(&agent, BOOSTER_DATA_URL).expect("拉取强化页面失败");
+        let items = parse_boosters_html(&html).expect("解析强化页面失败");
+        let mut failures: Vec<String> = Vec::new();
+        for item in &items {
+            let Some(url) = item.icon_url.as_deref() else {
+                failures.push(format!("{}: 无图标地址", item.name));
+                continue;
+            };
+            match crate::icon_fetch::fetch_icon_png(url) {
+                Ok(png) => match image::load_from_memory(&png) {
+                    Ok(img) => {
+                        if img.width() != 128 || img.height() != 128 {
+                            failures.push(format!(
+                                "{}: 尺寸 {}x{}",
+                                item.name,
+                                img.width(),
+                                img.height()
+                            ));
+                        }
+                    }
+                    Err(e) => failures.push(format!("{}: PNG 解码失败 {e}", item.name)),
+                },
+                Err(e) => failures.push(format!("{}: {e}", item.name)),
+            }
+        }
+        assert!(failures.is_empty(), "图标栅格化失败: {failures:#?}");
+        eprintln!("{} 个强化图标全部栅格化成功", items.len());
+    }
+
+    /// 端到端（离线）：强化解析结果 → _boosters.json → plugin::load_all()，
+    /// 必须带着 BOOSTER_SOURCE 与 Boosters 分类回到运行时列表。
+    #[test]
+    fn boosters_roundtrip_through_plugin_storage() {
+        let items = parse_boosters_html(BOOSTER_SAMPLE).unwrap();
+        let manifest = crate::stratagems::PluginManifest {
+            id: crate::plugin::BOOSTER_PLUGIN_ID.into(),
+            name: "页面自动获取的强化数据".into(),
+            enabled: true,
+            stratagems: items.clone(),
+        };
+        let path = crate::plugin::booster_plugin_path();
+        crate::util::save_json(&path, &manifest).expect("写入 _boosters.json 失败");
+
+        let loaded = crate::plugin::load_all();
+        let boosters: Vec<&PluginStratagem> = loaded
+            .iter()
+            .filter(|p| p.source == crate::plugin::BOOSTER_SOURCE)
+            .collect();
+        assert_eq!(boosters.len(), items.len());
+        assert!(boosters
+            .iter()
+            .all(|b| b.category == crate::stratagems::CAT_BOOSTERS));
+        assert!(boosters.iter().all(|b| b.command.is_empty()));
+        assert!(boosters.iter().all(|b| b.icon_url.is_some()));
+        assert!(crate::plugin::is_wiki_source(crate::plugin::BOOSTER_SOURCE));
+        assert!(!crate::plugin::is_wiki_source(""));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn parse_local_snapshot_if_present() {
         // 结构参考测试：仓库根目录的本地页面快照用于验证解析器与真实页面结构一致；
@@ -1348,13 +1808,23 @@ mod tests {
             eprintln!("skip: 本地页面快照不存在（仅作结构参考）");
             return;
         };
-        let items =
-            parse_stratagems_html(&html).unwrap_or_else(|e| panic!("快照解析失败: {e}"));
-        assert!(items.len() > 100, "快照应解析出上百条战备，实际 {}", items.len());
+        let items = parse_stratagems_html(&html).unwrap_or_else(|e| panic!("快照解析失败: {e}"));
+        assert!(
+            items.len() > 100,
+            "快照应解析出上百条战备，实际 {}",
+            items.len()
+        );
         let valid: HashSet<&str> = [
-            "Orbital Strikes", "Eagle Strikes", "Support Weapons", "Backpacks",
-            "Vehicles", "Sentries", "Emplacements", "Mission Stratagems",
-            "Objective", "Unavailable",
+            "Orbital Strikes",
+            "Eagle Strikes",
+            "Support Weapons",
+            "Backpacks",
+            "Vehicles",
+            "Sentries",
+            "Emplacements",
+            "Mission Stratagems",
+            "Objective",
+            "Unavailable",
         ]
         .into_iter()
         .collect();
@@ -1366,9 +1836,15 @@ mod tests {
         assert!(unknown.is_empty(), "存在未知分类: {unknown:?}");
         assert!(items.iter().all(|i| !i.name.contains("(Wiki)")));
         assert_eq!(items[0].category, "Orbital Strikes");
-        assert!(items.iter().any(|i| i.name == "Eagle Rearm" && i.category == "Mission Stratagems"));
-        assert!(items.iter().any(|i| i.name == "SEAF Artillery" && i.category == "Objective"));
-        assert!(items.iter().any(|i| i.name == "Orbital Illumination Flare" && i.category == "Unavailable"));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "Eagle Rearm" && i.category == "Mission Stratagems"));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "SEAF Artillery" && i.category == "Objective"));
+        assert!(items
+            .iter()
+            .any(|i| i.name == "Orbital Illumination Flare" && i.category == "Unavailable"));
     }
 
     #[test]
@@ -1429,10 +1905,7 @@ mod tests {
     #[test]
     fn icon_download_url_derives_images_link() {
         // 页面 alt/src 直接是文件名 → /images/ 直链（空格 → 下划线）
-        let url = icon_download_url(
-            "Eagle Rearm",
-            "Eagle Rearm Stratagem Icon Background.svg",
-        );
+        let url = icon_download_url("Eagle Rearm", "Eagle Rearm Stratagem Icon Background.svg");
         assert_eq!(
             url.as_deref(),
             Some("https://helldivers.wiki.gg/images/Eagle_Rearm_Stratagem_Icon_Background.svg")

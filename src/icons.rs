@@ -14,33 +14,112 @@ macro_rules! icons {
 }
 
 static ICON_DATA: &[(&str, &[u8])] = icons![
-    airburst_rocket_launcher, anti_materiel_rifle, anti_personnel_minefield, anti_tank_emplacement,
-    anti_tank_mines, arc_thrower, autocannon, autocannon_sentry,
-    ballistic_shield_backpack, bastion_mk_xvi, breakthrough_exosuit, bullet_storm,
-    c4_pack, call_in_super_destroyer, cargo_container, commando,
-    cqc_20, cremator, dark_fluid_vessel, defoliation_tool,
-    directional_shield, eagle_110mm_rocket_pods, eagle_500kg_bomb, eagle_airstrike,
-    eagle_cluster_bomb, eagle_napalm_airstrike, eagle_rearm, eagle_smoke_strike,
-    eagle_strafing_run, eat_411, emancipator_exosuit, ems_mortar_sentry,
-    epoch, expendable_anti_tank, expendable_napalm, fast_recon_vehicle,
-    flame_sentry, flamethrower, gas_mine, gas_mortar_sentry,
-    gatling_sentry, gl_28, gl_52_de_escalator, grenade_launcher,
-    grenadier_battlement, guard_dog, guard_dog_breath, guard_dog_hot_dog,
-    guard_dog_k_9, guard_dog_rover, heavy_machine_gun, hellbomb,
-    hellbomb_portable, hive_breaker_drill, hmg_emplacement, hover_pack,
-    incendiary_mines, incinerator_frv, jump_pack, laser_cannon,
-    laser_sentry, lumberer_exosuit, machine_gun, machine_gun_sentry,
-    maxigun, mortar_sentry, one_true_flag, orbital_120mm_he_barrage,
-    orbital_380mm_he_barrage, orbital_airburst_strike, orbital_ems_strike, orbital_gas_strike,
-    orbital_gatling_barrage, orbital_illumination_flare, orbital_laser, orbital_napalm_barrage,
-    orbital_precision_strike, orbital_railcannon_strike, orbital_smoke_strike, orbital_walking_barrage,
-    patriot_exosuit, prospecting_drill, quasar_cannon, railgun,
-    recoilless_rifle, reinforce, resupply, rocket_sentry,
-    seaf_artillery, seismic_probe, shield_generator_pack, shield_generator_relay,
-    solo_silo, sos_beacon, spear, speargun,
-    sta_x3_w_a_s_p_launcher, stalwart, sterilizer, super_earth_flag,
-    supply_frv, supply_pack, tectonic_drill, tesla_tower,
-    upload_data, warp_pack,
+    airburst_rocket_launcher,
+    anti_materiel_rifle,
+    anti_personnel_minefield,
+    anti_tank_emplacement,
+    anti_tank_mines,
+    arc_thrower,
+    autocannon,
+    autocannon_sentry,
+    ballistic_shield_backpack,
+    bastion_mk_xvi,
+    breakthrough_exosuit,
+    bullet_storm,
+    c4_pack,
+    call_in_super_destroyer,
+    cargo_container,
+    commando,
+    cqc_20,
+    cremator,
+    dark_fluid_vessel,
+    defoliation_tool,
+    directional_shield,
+    eagle_110mm_rocket_pods,
+    eagle_500kg_bomb,
+    eagle_airstrike,
+    eagle_cluster_bomb,
+    eagle_napalm_airstrike,
+    eagle_rearm,
+    eagle_smoke_strike,
+    eagle_strafing_run,
+    eat_411,
+    emancipator_exosuit,
+    ems_mortar_sentry,
+    epoch,
+    expendable_anti_tank,
+    expendable_napalm,
+    fast_recon_vehicle,
+    flame_sentry,
+    flamethrower,
+    gas_mine,
+    gas_mortar_sentry,
+    gatling_sentry,
+    gl_28,
+    gl_52_de_escalator,
+    grenade_launcher,
+    grenadier_battlement,
+    guard_dog,
+    guard_dog_breath,
+    guard_dog_hot_dog,
+    guard_dog_k_9,
+    guard_dog_rover,
+    heavy_machine_gun,
+    hellbomb,
+    hellbomb_portable,
+    hive_breaker_drill,
+    hmg_emplacement,
+    hover_pack,
+    incendiary_mines,
+    incinerator_frv,
+    jump_pack,
+    laser_cannon,
+    laser_sentry,
+    lumberer_exosuit,
+    machine_gun,
+    machine_gun_sentry,
+    maxigun,
+    mortar_sentry,
+    one_true_flag,
+    orbital_120mm_he_barrage,
+    orbital_380mm_he_barrage,
+    orbital_airburst_strike,
+    orbital_ems_strike,
+    orbital_gas_strike,
+    orbital_gatling_barrage,
+    orbital_illumination_flare,
+    orbital_laser,
+    orbital_napalm_barrage,
+    orbital_precision_strike,
+    orbital_railcannon_strike,
+    orbital_smoke_strike,
+    orbital_walking_barrage,
+    patriot_exosuit,
+    prospecting_drill,
+    quasar_cannon,
+    railgun,
+    recoilless_rifle,
+    reinforce,
+    resupply,
+    rocket_sentry,
+    seaf_artillery,
+    seismic_probe,
+    shield_generator_pack,
+    shield_generator_relay,
+    solo_silo,
+    sos_beacon,
+    spear,
+    speargun,
+    sta_x3_w_a_s_p_launcher,
+    stalwart,
+    sterilizer,
+    super_earth_flag,
+    supply_frv,
+    supply_pack,
+    tectonic_drill,
+    tesla_tower,
+    upload_data,
+    warp_pack,
 ];
 
 /// 文件名以数字开头，无法作为 Rust ident 进入上面的 icons! 宏，单独登记。
@@ -50,12 +129,36 @@ static ICON_DATA_EXTRA: &[(&str, &[u8])] = &[(
     include_bytes!("../assets/icons/40_k_meltagun.png"),
 )];
 
+/// 按图标键取内嵌 PNG 原始字节。
+///
+/// Loadout Sync 的模板匹配需要像素数据而不是已上传 GPU 的纹理，
+/// 因此这里直接暴露 include_bytes! 的静态字节；运行期在线补齐的图标
+/// 不在内嵌表中（返回 None，由调用方回落到 assets/icons/{key}.png）。
+pub fn icon_png_bytes(key: &str) -> Option<&'static [u8]> {
+    ICON_DATA
+        .iter()
+        .chain(ICON_DATA_EXTRA)
+        .find(|(k, _)| *k == key)
+        .map(|(_, bytes)| *bytes)
+}
+
+/// 全部内嵌图标键（Loadout Sync 用整库模板做「这个格子到底像谁」的判别，
+/// 避免在相似战备之间误选：例如轨道激光炮 vs 轨道磁轨炮）。
+pub fn all_icon_keys() -> Vec<&'static str> {
+    ICON_DATA
+        .iter()
+        .chain(ICON_DATA_EXTRA)
+        .map(|(k, _)| *k)
+        .collect()
+}
+
 pub struct IconStore {
     map: HashMap<String, TextureHandle>,
 }
 
 fn load_png(ctx: &Context, key: String, bytes: &[u8]) -> Option<TextureHandle> {
-    let img = image::load_from_memory(bytes).ok()?
+    let img = image::load_from_memory(bytes)
+        .ok()?
         .resize(128, 128, image::imageops::FilterType::Lanczos3)
         .to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
@@ -77,17 +180,25 @@ impl IconStore {
 
         // 2. 运行时从磁盘加载额外图标（exe 同目录 + 项目根目录）
         let search_dirs = [
-            std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("assets/icons"))),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("assets/icons"))),
             std::env::current_dir().ok().map(|d| d.join("assets/icons")),
         ];
         for icon_dir in search_dirs.into_iter().flatten() {
-            if !icon_dir.exists() { continue; }
+            if !icon_dir.exists() {
+                continue;
+            }
             if let Ok(entries) = std::fs::read_dir(&icon_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().is_none_or(|e| e != "png") { continue; }
+                    if path.extension().is_none_or(|e| e != "png") {
+                        continue;
+                    }
                     let key = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    if map.contains_key(key) { continue; }
+                    if map.contains_key(key) {
+                        continue;
+                    }
                     if let Ok(bytes) = std::fs::read(&path) {
                         if let Some(tex) = load_png(ctx, key.to_string(), &bytes) {
                             map.insert(key.to_string(), tex);

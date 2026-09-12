@@ -1,10 +1,10 @@
 // HD2 HUD 设计系统 — 配色 / 字体 / 全局样式 / UiMetrics
+use crate::stratagems::{
+    CAT_BACKPACKS, CAT_BOOSTERS, CAT_EAGLE, CAT_EMPLACEMENTS, CAT_MISSION, CAT_OBJECTIVE,
+    CAT_ORBITAL, CAT_SENTRIES, CAT_SUPPORT, CAT_VEHICLES,
+};
 use eframe::egui::{
     self, Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke,
-};
-use crate::stratagems::{
-    CAT_BACKPACKS, CAT_EAGLE, CAT_EMPLACEMENTS, CAT_MISSION, CAT_OBJECTIVE, CAT_ORBITAL,
-    CAT_SENTRIES, CAT_SUPPORT, CAT_VEHICLES,
 };
 
 // ─── 背景层级 ───
@@ -38,8 +38,6 @@ pub const LINE: Color32 = Color32::from_rgb(0x24, 0x29, 0x36);
 // ─── 设计基准布局（unscaled, scale=1.0 时即为像素值） ───
 pub const DESIGN_W: f32 = 1100.0;
 pub const DESIGN_H: f32 = 640.0;
-pub const COMPACT_DESIGN_W: f32 = 554.0;
-pub const COMPACT_DESIGN_H: f32 = 56.0;
 
 /// 执行闪光衰减时长（秒）
 pub const FLASH_DURATION: f32 = 0.7;
@@ -51,6 +49,8 @@ pub fn category_color(cat: &str) -> Color32 {
         CAT_ORBITAL | CAT_EAGLE => CAT_FIRE,
         CAT_SUPPORT | CAT_BACKPACKS | CAT_VEHICLES => CAT_EQUIP,
         CAT_SENTRIES | CAT_EMPLACEMENTS => CAT_DEF,
+        // 强化（Booster）在游戏里是金色强化图标
+        CAT_BOOSTERS => GOLD_MID,
         _ => TEXT_SUB,
     }
 }
@@ -73,18 +73,33 @@ pub fn install_fonts(ctx: &Context) {
     let cjk = ["C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"]
         .iter()
         .find_map(|p| std::fs::read(p).ok())
-        .map(|d| FontData::from_owned(d).tweak(egui::FontTweak { scale: 0.95, ..Default::default() }));
-    if let Some(data) = cjk { fonts.font_data.insert("cjk".into(), data.into()); }
+        .map(|d| {
+            FontData::from_owned(d).tweak(egui::FontTweak {
+                scale: 0.95,
+                ..Default::default()
+            })
+        });
+    if let Some(data) = cjk {
+        fonts.font_data.insert("cjk".into(), data.into());
+    }
     let mut hud_chain: Vec<String> = Vec::new();
     for n in ["saira_md", "cjk"] {
-        if fonts.font_data.contains_key(n) { hud_chain.push(n.to_string()); }
+        if fonts.font_data.contains_key(n) {
+            hud_chain.push(n.to_string());
+        }
     }
     let mut hud_b_chain: Vec<String> = Vec::new();
     for n in ["saira_bd", "cjk"] {
-        if fonts.font_data.contains_key(n) { hud_b_chain.push(n.to_string()); }
+        if fonts.font_data.contains_key(n) {
+            hud_b_chain.push(n.to_string());
+        }
     }
-    fonts.families.insert(FontFamily::Name(FAM_HUD.into()), hud_chain.clone());
-    fonts.families.insert(FontFamily::Name(FAM_HUD_B.into()), hud_b_chain);
+    fonts
+        .families
+        .insert(FontFamily::Name(FAM_HUD.into()), hud_chain.clone());
+    fonts
+        .families
+        .insert(FontFamily::Name(FAM_HUD_B.into()), hud_b_chain);
     fonts.families.insert(FontFamily::Proportional, hud_chain);
     ctx.set_fonts(fonts);
 }
@@ -97,7 +112,9 @@ pub struct UiMetrics {
 }
 
 impl UiMetrics {
-    pub fn new(scale: f32) -> Self { Self { scale } }
+    pub fn new(scale: f32) -> Self {
+        Self { scale }
+    }
 
     pub fn hud(&self, size: f32) -> FontId {
         FontId::new(size * self.scale, FontFamily::Name(FAM_HUD.into()))
@@ -107,106 +124,236 @@ impl UiMetrics {
     }
 
     // ─── 常用尺寸 (scaled) ───
-    pub fn tile_w(&self) -> f32 { 124.0 * self.scale }
-    pub fn tile_h(&self) -> f32 { 150.0 * self.scale }
-    pub fn tile_gap(&self) -> f32 { 10.0 * self.scale }
-    pub fn chamfer(&self) -> f32 { 10.0 * self.scale }
-    pub fn topbar_h(&self) -> f32 { 48.0 * self.scale }
-    pub fn bottombar_h(&self) -> f32 { 52.0 * self.scale }
-    pub fn content_margin_x(&self) -> f32 { 12.0 * self.scale }
-    pub fn content_margin_y(&self) -> f32 { 8.0 * self.scale }
-    pub fn left_panel_w(&self) -> f32 { 664.0 * self.scale }
-    pub fn panel_gap(&self) -> f32 { 8.0 * self.scale }
-
-    // 紧凑模式
-    pub fn compact_w(&self) -> f32 { COMPACT_DESIGN_W * self.scale }
-    pub fn compact_h(&self) -> f32 { COMPACT_DESIGN_H * self.scale }
-    pub fn compact_tile(&self) -> f32 { 40.0 * self.scale }
-    pub fn compact_gap(&self) -> f32 { 6.0 * self.scale }
-    pub fn compact_ctrl(&self) -> f32 { 30.0 * self.scale }
-    pub fn compact_inner_margin(&self) -> f32 { 12.0 * self.scale }
+    pub fn tile_w(&self) -> f32 {
+        124.0 * self.scale
+    }
+    pub fn tile_h(&self) -> f32 {
+        150.0 * self.scale
+    }
+    pub fn tile_gap(&self) -> f32 {
+        10.0 * self.scale
+    }
+    pub fn chamfer(&self) -> f32 {
+        10.0 * self.scale
+    }
+    pub fn topbar_h(&self) -> f32 {
+        48.0 * self.scale
+    }
+    pub fn bottombar_h(&self) -> f32 {
+        52.0 * self.scale
+    }
+    pub fn content_margin_x(&self) -> f32 {
+        12.0 * self.scale
+    }
+    pub fn content_margin_y(&self) -> f32 {
+        8.0 * self.scale
+    }
+    pub fn left_panel_w(&self) -> f32 {
+        664.0 * self.scale
+    }
+    pub fn panel_gap(&self) -> f32 {
+        8.0 * self.scale
+    }
 
     // 分类 Rail
-    pub fn cat_rail_w(&self) -> f32 { 64.0 * self.scale }
-    pub fn cat_row_w(&self) -> f32 { 60.0 * self.scale }
-    pub fn cat_row_h(&self) -> f32 { 34.0 * self.scale }
-    pub fn cat_row_spacing(&self) -> f32 { 38.0 * self.scale }
-    pub fn cat_accent_bar_w(&self) -> f32 { 3.0 * self.scale }
+    pub fn cat_rail_w(&self) -> f32 {
+        64.0 * self.scale
+    }
+    pub fn cat_row_w(&self) -> f32 {
+        60.0 * self.scale
+    }
+    pub fn cat_row_h(&self) -> f32 {
+        34.0 * self.scale
+    }
+    pub fn cat_row_spacing(&self) -> f32 {
+        38.0 * self.scale
+    }
+    pub fn cat_accent_bar_w(&self) -> f32 {
+        3.0 * self.scale
+    }
 
     // 库行
-    pub fn lib_row_h(&self) -> f32 { 36.0 * self.scale }
-    pub fn lib_icon_size(&self) -> f32 { 26.0 * self.scale }
-    pub fn lib_row_icon_x(&self) -> f32 { 20.0 * self.scale }
-    pub fn lib_row_text_x(&self) -> f32 { 40.0 * self.scale }
+    pub fn lib_row_h(&self) -> f32 {
+        36.0 * self.scale
+    }
+    pub fn lib_icon_size(&self) -> f32 {
+        26.0 * self.scale
+    }
+    pub fn lib_row_icon_x(&self) -> f32 {
+        20.0 * self.scale
+    }
+    pub fn lib_row_text_x(&self) -> f32 {
+        40.0 * self.scale
+    }
 
     // 详情面板
-    pub fn detail_icon_size(&self) -> f32 { 80.0 * self.scale }
-    pub fn detail_icon_area_w(&self) -> f32 { 96.0 * self.scale }
-    pub fn detail_text_area_w(&self) -> f32 { 190.0 * self.scale }
-    pub fn detail_btn_area_w(&self) -> f32 { 88.0 * self.scale }
+    pub fn detail_icon_size(&self) -> f32 {
+        80.0 * self.scale
+    }
+    pub fn detail_icon_area_w(&self) -> f32 {
+        96.0 * self.scale
+    }
+    pub fn detail_text_area_w(&self) -> f32 {
+        190.0 * self.scale
+    }
+    pub fn detail_btn_area_w(&self) -> f32 {
+        88.0 * self.scale
+    }
 
     // 字形按钮
-    pub fn glyph_btn(&self) -> f32 { 30.0 * self.scale }
-    pub fn glyph_btn_sm(&self) -> f32 { 24.0 * self.scale }
-    pub fn glyph_btn_md(&self) -> f32 { 26.0 * self.scale }
-    pub fn glyph_btn_hover_shrink(&self) -> f32 { 1.0 * self.scale }
+    pub fn glyph_btn(&self) -> f32 {
+        30.0 * self.scale
+    }
+    pub fn glyph_btn_sm(&self) -> f32 {
+        24.0 * self.scale
+    }
+    pub fn glyph_btn_md(&self) -> f32 {
+        26.0 * self.scale
+    }
+    pub fn glyph_btn_hover_shrink(&self) -> f32 {
+        1.0 * self.scale
+    }
 
     // HUD 按钮
-    pub fn status_lamp_r(&self) -> f32 { 4.5 * self.scale }
+    pub fn status_lamp_r(&self) -> f32 {
+        4.5 * self.scale
+    }
 
     // 槽位 tile
-    pub fn slot_tile_num_x(&self) -> f32 { 8.0 * self.scale }
-    pub fn slot_tile_num_y(&self) -> f32 { 6.0 * self.scale }
-    pub fn slot_icon_size(&self) -> f32 { 56.0 * self.scale }
-    pub fn slot_icon_y(&self) -> f32 { 48.0 * self.scale }
-    pub fn slot_name_y(&self) -> f32 { 84.0 * self.scale }
-    pub fn slot_arrow_y(&self) -> f32 { 112.0 * self.scale }
-    pub fn slot_arrow_size(&self) -> f32 { 10.0 * self.scale }
-    pub fn slot_arrow_gap(&self) -> f32 { 3.0 * self.scale }
-    pub fn slot_cat_bar_h(&self) -> f32 { 3.0 * self.scale }
-    pub fn slot_cat_bar_y_offset(&self) -> f32 { 5.0 * self.scale }
-    pub fn slot_hotkey_badge_w(&self) -> f32 { 21.0 * self.scale }
-    pub fn slot_hotkey_badge_h(&self) -> f32 { 15.0 * self.scale }
-    pub fn slot_hotkey_badge_x_offset(&self) -> f32 { 26.0 * self.scale }
-    pub fn slot_hotkey_badge_y_offset(&self) -> f32 { 5.0 * self.scale }
+    pub fn slot_tile_num_x(&self) -> f32 {
+        8.0 * self.scale
+    }
+    pub fn slot_tile_num_y(&self) -> f32 {
+        6.0 * self.scale
+    }
+    pub fn slot_icon_size(&self) -> f32 {
+        56.0 * self.scale
+    }
+    pub fn slot_icon_y(&self) -> f32 {
+        48.0 * self.scale
+    }
+    pub fn slot_name_y(&self) -> f32 {
+        84.0 * self.scale
+    }
+    pub fn slot_arrow_y(&self) -> f32 {
+        112.0 * self.scale
+    }
+    pub fn slot_arrow_size(&self) -> f32 {
+        10.0 * self.scale
+    }
+    pub fn slot_arrow_gap(&self) -> f32 {
+        3.0 * self.scale
+    }
+    pub fn slot_cat_bar_h(&self) -> f32 {
+        3.0 * self.scale
+    }
+    pub fn slot_cat_bar_y_offset(&self) -> f32 {
+        5.0 * self.scale
+    }
+    pub fn slot_hotkey_badge_w(&self) -> f32 {
+        21.0 * self.scale
+    }
+    pub fn slot_hotkey_badge_h(&self) -> f32 {
+        15.0 * self.scale
+    }
+    pub fn slot_hotkey_badge_x_offset(&self) -> f32 {
+        26.0 * self.scale
+    }
+    pub fn slot_hotkey_badge_y_offset(&self) -> f32 {
+        5.0 * self.scale
+    }
 
     // 详情面板大箭头
-    pub fn detail_arrow_size(&self) -> f32 { 18.0 * self.scale }
-    pub fn detail_arrow_gap(&self) -> f32 { 6.0 * self.scale }
+    pub fn detail_arrow_size(&self) -> f32 {
+        18.0 * self.scale
+    }
+    pub fn detail_arrow_gap(&self) -> f32 {
+        6.0 * self.scale
+    }
 
     // 库行小箭头
-    pub fn lib_arrow_size(&self) -> f32 { 8.0 * self.scale }
-    pub fn lib_arrow_gap(&self) -> f32 { 2.0 * self.scale }
+    pub fn lib_arrow_size(&self) -> f32 {
+        8.0 * self.scale
+    }
+    pub fn lib_arrow_gap(&self) -> f32 {
+        2.0 * self.scale
+    }
 
     // 搜索框
-    pub fn search_w(&self) -> f32 { 120.0 * self.scale }
+    pub fn search_w(&self) -> f32 {
+        120.0 * self.scale
+    }
 
     // 顶部监听灯区域
-    pub fn listening_btn_w(&self) -> f32 { 110.0 * self.scale }
-    pub fn listening_btn_h(&self) -> f32 { 32.0 * self.scale }
+    pub fn listening_btn_w(&self) -> f32 {
+        110.0 * self.scale
+    }
+    pub fn listening_btn_h(&self) -> f32 {
+        32.0 * self.scale
+    }
+
+    // 顶部 Loadout Sync 状态胶囊
+    pub fn sync_btn_w(&self) -> f32 {
+        150.0 * self.scale
+    }
 
     // Profile 输入框/ComboBox
-    pub fn profile_input_w(&self) -> f32 { 90.0 * self.scale }
-    pub fn profile_combo_w(&self) -> f32 { 120.0 * self.scale }
+    pub fn profile_input_w(&self) -> f32 {
+        90.0 * self.scale
+    }
+    pub fn profile_combo_w(&self) -> f32 {
+        120.0 * self.scale
+    }
 
     // 弹窗默认宽度
-    pub fn modal_settings_w(&self) -> f32 { 360.0 * self.scale }
-    pub fn modal_settings_h(&self) -> f32 { 390.0 * self.scale }
-    pub fn modal_stratagem_w(&self) -> f32 { 420.0 * self.scale }
-    pub fn modal_stratagem_h(&self) -> f32 { 400.0 * self.scale }
-    pub fn modal_keycap_w(&self) -> f32 { 300.0 * self.scale }
-    pub fn modal_keycap_h(&self) -> f32 { 150.0 * self.scale }
-    pub fn modal_ctx_menu_w(&self) -> f32 { 150.0 * self.scale }
-    pub fn modal_lib_ctx_w(&self) -> f32 { 180.0 * self.scale }
-    pub fn modal_row_h(&self) -> f32 { 30.0 * self.scale }
-    pub fn modal_pad_y(&self) -> f32 { 18.0 * self.scale }
+    pub fn modal_settings_w(&self) -> f32 {
+        360.0 * self.scale
+    }
+    pub fn modal_settings_h(&self) -> f32 {
+        470.0 * self.scale
+    }
+    pub fn modal_stratagem_w(&self) -> f32 {
+        420.0 * self.scale
+    }
+    pub fn modal_stratagem_h(&self) -> f32 {
+        400.0 * self.scale
+    }
+    pub fn modal_keycap_w(&self) -> f32 {
+        300.0 * self.scale
+    }
+    pub fn modal_keycap_h(&self) -> f32 {
+        150.0 * self.scale
+    }
+    pub fn modal_ctx_menu_w(&self) -> f32 {
+        150.0 * self.scale
+    }
+    pub fn modal_lib_ctx_w(&self) -> f32 {
+        180.0 * self.scale
+    }
+    pub fn modal_row_h(&self) -> f32 {
+        30.0 * self.scale
+    }
+    pub fn modal_pad_y(&self) -> f32 {
+        18.0 * self.scale
+    }
 
     // 插件创建器
-    pub fn plugin_creator_w(&self) -> f32 { 560.0 * self.scale }
-    pub fn plugin_creator_h(&self) -> f32 { 480.0 * self.scale }
+    pub fn plugin_creator_w(&self) -> f32 {
+        560.0 * self.scale
+    }
+    pub fn plugin_creator_h(&self) -> f32 {
+        480.0 * self.scale
+    }
 
     // ─── 适配字体 ───
-    pub fn fit_font(&self, p: &egui::Painter, text: &str, max_w: f32, sizes: &[f32], bold: bool) -> FontId {
+    pub fn fit_font(
+        &self,
+        p: &egui::Painter,
+        text: &str,
+        max_w: f32,
+        sizes: &[f32],
+        bold: bool,
+    ) -> FontId {
         for &s in sizes {
             let f = if bold { self.hud_b(s) } else { self.hud(s) };
             if p.layout_no_wrap(text.to_string(), f.clone(), TEXT).size().x <= max_w {
@@ -215,7 +362,11 @@ impl UiMetrics {
         }
         // sizes 为空或全部超出时退回合理默认，避免 panic
         let fallback = sizes.last().copied().unwrap_or(12.0);
-        if bold { self.hud_b(fallback) } else { self.hud(fallback) }
+        if bold {
+            self.hud_b(fallback)
+        } else {
+            self.hud(fallback)
+        }
     }
 }
 

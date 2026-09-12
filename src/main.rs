@@ -2,20 +2,23 @@
 // Helldivers 2 Auto Stratagem Caller — Rust + egui
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod compact_view;
+mod compact_mode;
 mod config;
 mod executor;
 mod hotkey;
 mod icon_fetch;
 mod icons;
+mod loadout_sync;
 mod main_view;
 mod model;
+mod overlay_win;
 mod plugin;
 mod state;
 mod stratagems;
 mod theme;
 mod ui;
 mod util;
+mod vision;
 mod widgets;
 mod wiki_fetcher;
 
@@ -26,9 +29,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use config::{list_profiles, load_config, save_config, SLOT_COUNT};
 use eframe::egui::{self, Context, Pos2};
 use icons::IconStore;
-use state::{
-    AppModel, CaptureState, CreatorState, LibraryState, PluginData, WikiState,
-};
+use state::{AppModel, CaptureState, CreatorState, LibraryState, PluginData, WikiState};
 use stratagems::{get_categories, STRATAGEMS};
 
 // ─── 日志 ───
@@ -54,11 +55,22 @@ fn now_hms() -> String {
 
 /// 内置战备指令签名（英文方向 join），Wiki 差集比对用 O(1) 成员判定
 static BUILTIN_SIGNATURES: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
-    STRATAGEMS.iter().map(|bs| {
-        bs.command.iter().map(|d| {
-            match *d { "↑" => "up", "↓" => "down", "←" => "left", "→" => "right", _ => *d }
-        }).collect::<Vec<_>>().join(",")
-    }).collect()
+    STRATAGEMS
+        .iter()
+        .map(|bs| {
+            bs.command
+                .iter()
+                .map(|d| match *d {
+                    "↑" => "up",
+                    "↓" => "down",
+                    "←" => "left",
+                    "→" => "right",
+                    _ => *d,
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect()
 });
 
 // ─── 应用状态 ───
@@ -107,6 +119,14 @@ pub struct H2ACApp {
     pub settings_delay: f64,
     pub settings_pre_delay: f64,
     pub settings_listen_hotkey: String,
+    /// 设置面板中的 Loadout Sync 配置镜像（保存时写回 config）
+    pub settings_loadout_sync_hotkey: String,
+    pub settings_compact_toggle: String,
+    /// 全局取消装配快捷键（属于 Loadout Sync，不属于紧凑模式）
+    pub settings_cancel_hotkey: String,
+    pub settings_compact_opacity: f32,
+    pub settings_allow_overwrite: bool,
+    pub settings_debug_shots: bool,
     pub context: Option<ContextState>,
     pub library_context: Option<LibraryContext>,
     pub stratagem_settings: StratagemSettings,
@@ -117,6 +137,12 @@ pub struct H2ACApp {
     pub icon_jobs_total: usize,
     pub icon_jobs_done: usize,
     pub icon_jobs_ok: usize,
+    /// 分层窗口（透明度）是否可用
+    pub overlay_window_ready: bool,
+    /// 热键钩子启动时刻（用于延迟判定「注册失败」）
+    pub hotkey_started_at: Option<std::time::Instant>,
+    /// 是否已就注册失败写过日志（只写一次）
+    pub hotkey_failure_logged: bool,
 }
 
 /// 图标补齐单条任务结果（后台线程 → 主线程）
@@ -155,7 +181,8 @@ impl H2ACApp {
             detail_slot: None,
             listening,
             config,
-            compact: false,
+            view_mode: state::ViewMode::Main,
+            compact_preset: crate::compact_mode::CompactPresetState::default(),
             flash: HashMap::new(),
             icons,
             debug_mode: false,
@@ -164,6 +191,7 @@ impl H2ACApp {
             save_profile_name: String::new(),
             scale: 1.0,
             metrics: theme::UiMetrics::new(1.0),
+            loadout_sync: crate::loadout_sync::state::LoadoutSyncHandle::new(),
         };
 
         let library = LibraryState {
@@ -176,8 +204,14 @@ impl H2ACApp {
             model,
             library,
             capture: CaptureState::default(),
-            plugins: PluginData { stratagems: plugin_stratagems },
-            wiki: WikiState { fetch_rx: None, fetch_status: String::new(), cache_exists: plugin::wiki_plugin_path().exists() },
+            plugins: PluginData {
+                stratagems: plugin_stratagems,
+            },
+            wiki: WikiState {
+                fetch_rx: None,
+                fetch_status: String::new(),
+                cache_exists: plugin::wiki_plugin_path().exists(),
+            },
             creator: CreatorState::default(),
             logs,
             show_settings: false,
@@ -186,25 +220,57 @@ impl H2ACApp {
             settings_delay: 0.05,
             settings_pre_delay: 0.12,
             settings_listen_hotkey: String::new(),
+            settings_loadout_sync_hotkey: String::new(),
+            settings_compact_toggle: crate::compact_mode::config::CompactModeConfig::default()
+                .toggle_hotkey,
+            settings_cancel_hotkey: config::Config::default().loadout_sync_cancel_hotkey,
+            settings_compact_opacity: crate::compact_mode::config::CompactModeConfig::default()
+                .opacity,
+            settings_allow_overwrite: false,
+            settings_debug_shots: false,
             context: None,
             library_context: None,
-            stratagem_settings: StratagemSettings { visible: false, name: String::new(), icon_key: String::new(), command_text: String::new(), description: String::new(), category: String::new(), is_plugin: false, original_name: String::new() },
+            stratagem_settings: StratagemSettings {
+                visible: false,
+                name: String::new(),
+                icon_key: String::new(),
+                command_text: String::new(),
+                description: String::new(),
+                category: String::new(),
+                is_plugin: false,
+                original_name: String::new(),
+            },
             hotkey_rx: None,
             hotkey: None,
             icon_rx: None,
             icon_jobs_total: 0,
             icon_jobs_done: 0,
             icon_jobs_ok: 0,
+            overlay_window_ready: true,
+            hotkey_started_at: None,
+            hotkey_failure_logged: false,
         };
 
         if app.model.listening || !app.model.config.listen_hotkey.trim().is_empty() {
             app.start_hotkeys();
         }
+
+        // 启动时检查全局快捷键冲突（listen / 自动装配 / 槽位），冲突必须提示用户
+        for conflict in app.model.config.hotkey_conflicts() {
+            app.log(
+                LogKind::Warn,
+                format!("[LoadoutSync] 快捷键冲突：{conflict}"),
+            );
+        }
         app
     }
 
     pub fn log(&mut self, kind: LogKind, text: impl Into<String>) {
-        self.logs.push_back(LogEntry { time: now_hms(), text: text.into(), kind });
+        self.logs.push_back(LogEntry {
+            time: now_hms(),
+            text: text.into(),
+            kind,
+        });
         while self.logs.len() > 32 {
             self.logs.pop_front();
         }
@@ -225,26 +291,50 @@ impl H2ACApp {
         self.settings_delay = self.model.config.key_delay;
         self.settings_pre_delay = self.model.config.pre_delay;
         self.settings_listen_hotkey = self.model.config.listen_hotkey.clone();
+        self.settings_loadout_sync_hotkey = self.model.config.loadout_sync_hotkey.clone();
+        self.settings_compact_toggle = self.model.config.compact_mode.toggle_hotkey.clone();
+        self.settings_cancel_hotkey = self.model.config.loadout_sync_cancel_hotkey.clone();
+        self.settings_compact_opacity = self.model.config.compact_mode.opacity;
+        self.settings_allow_overwrite = self.model.config.loadout_sync.allow_overwrite_filled;
+        self.settings_debug_shots = self.model.config.loadout_sync.debug_screenshots;
         self.show_settings = true;
     }
 
-    pub fn set_compact(&mut self, ctx: &Context, compact: bool) {
-        self.model.compact = compact;
+    /// 按当前视图模式应用窗口尺寸 / 层级 / Overlay 透明度
+    pub fn apply_view_mode(&mut self, ctx: &Context) {
         self.context = None;
-        if compact {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
-                theme::COMPACT_DESIGN_W, theme::COMPACT_DESIGN_H,
-            )));
-            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
-        } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(theme::DESIGN_W, theme::DESIGN_H)));
+        match self.model.view_mode {
+            state::ViewMode::Main => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::Normal,
+                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
+                    theme::DESIGN_W,
+                    theme::DESIGN_H,
+                )));
+                self.set_overlay_window_hidden(false);
+            }
+            state::ViewMode::Compact => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::AlwaysOnTop,
+                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
+                    crate::compact_mode::config::OVERLAY_DESIGN_W,
+                    crate::compact_mode::config::OVERLAY_DESIGN_H,
+                )));
+                // 隐藏状态下不要把窗口重新点亮
+                let visible = self.model.compact_preset.overlay_visible();
+                self.set_overlay_window_hidden(!visible);
+            }
         }
     }
 
     /// 由 config 构建 键名→动作 映射（非法槽位/键名被过滤）。
     /// 监听开关热键始终生效；已静音时槽位热键不会进入映射。
-    fn hotkey_action_map(config: &config::Config, listening: bool) -> HashMap<String, hotkey::HotkeyAction> {
+    fn hotkey_action_map(
+        config: &config::Config,
+        listening: bool,
+    ) -> HashMap<String, hotkey::HotkeyAction> {
         use hotkey::HotkeyAction;
         let mut map: HashMap<String, hotkey::HotkeyAction> = HashMap::new();
 
@@ -252,33 +342,105 @@ impl H2ACApp {
             for (slot_key, key_raw) in &config.slot_hotkeys {
                 if let Ok(slot) = slot_key.parse::<usize>() {
                     if slot < SLOT_COUNT && !key_raw.trim().is_empty() {
-                        map.insert(hotkey::normalize_key_name(key_raw), HotkeyAction::Slot(slot));
+                        map.insert(hotkey::normalize_hotkey(key_raw), HotkeyAction::Slot(slot));
                     }
                 }
             }
         }
 
-        if !config.listen_hotkey.trim().is_empty() {
-            map.insert(
-                hotkey::normalize_key_name(&config.listen_hotkey),
-                HotkeyAction::ToggleListening,
+        // 插入顺序即优先级（后插入覆盖同键）：
+        //   槽位 < 自动装配 < 取消 < 显示浮窗 < 监听开关
+        // 这些热键与监听开关一样，无论是否静音都生效（它们不注入战斗键盘序列）。
+        let bind =
+            |map: &mut HashMap<String, hotkey::HotkeyAction>, raw: &str, action: HotkeyAction| {
+                let key = hotkey::normalize_hotkey(raw);
+                if !key.is_empty() {
+                    map.insert(key, action);
+                }
+            };
+        // ── 三个互相正交的全局动作（§1 / §17）──
+        //   AutoLoadout          ：任何模式下都可用；只管启动 Loadout Sync
+        //   CancelLoadoutSync    ：任何模式下都可用；只管停止 Loadout Sync
+        //   ToggleCompactOverlay ：唯一能改变浮窗可见性的动作（关闭紧凑模式时才不注册）
+        // 注意：取消与自动装配都不依赖 compact_mode.enabled，也不依赖浮窗当前状态。
+        bind(
+            &mut map,
+            &config.loadout_sync_hotkey,
+            HotkeyAction::AutoLoadout,
+        );
+        bind(
+            &mut map,
+            &config.loadout_sync_cancel_hotkey,
+            HotkeyAction::CancelLoadoutSync,
+        );
+        if config.compact_mode.enabled {
+            bind(
+                &mut map,
+                &config.compact_mode.toggle_hotkey,
+                HotkeyAction::ToggleCompactOverlay,
             );
         }
+        bind(
+            &mut map,
+            &config.listen_hotkey,
+            HotkeyAction::ToggleListening,
+        );
         map
     }
 
     /// 监听运行中热键配置变化后调用，使运行中的钩子立即使用新映射
     pub fn sync_hotkey_map(&self) {
         if self.hotkey.is_some() {
-            hotkey::update_map(&Self::hotkey_action_map(&self.model.config, self.model.listening));
+            hotkey::update_map(&Self::hotkey_action_map(
+                &self.model.config,
+                self.model.listening,
+            ));
         }
     }
 
+    /// 启动全局热键钩子（应用生命周期级别：与 Loadout Sync 状态、浮窗可见性都无关）。
     fn start_hotkeys(&mut self) {
-        let map = Arc::new(Mutex::new(Self::hotkey_action_map(&self.model.config, self.model.listening)));
+        let map = Arc::new(Mutex::new(Self::hotkey_action_map(
+            &self.model.config,
+            self.model.listening,
+        )));
         let (tx, rx) = mpsc::channel();
         self.hotkey = Some(hotkey::HotkeyListener::start(map, tx));
         self.hotkey_rx = Some(rx);
+        self.hotkey_started_at = Some(std::time::Instant::now());
+        self.hotkey_failure_logged = false;
+    }
+
+    /// 热键注册结果检查：失败时给出具体错误，但**绝不退出应用**（§16）。
+    fn check_hotkey_registration(&mut self) {
+        if self.hotkey_failure_logged {
+            return;
+        }
+        let Some(started) = self.hotkey_started_at else {
+            return;
+        };
+        if started.elapsed() < std::time::Duration::from_millis(1500) {
+            return;
+        }
+        let installed = self.hotkey.as_ref().map(|h| h.installed()).unwrap_or(true);
+        if installed {
+            self.hotkey_failure_logged = true;
+            return;
+        }
+        self.hotkey_failure_logged = true;
+        let bindings = Self::hotkey_action_map(&self.model.config, self.model.listening);
+        let mut keys: Vec<String> = bindings.keys().cloned().collect();
+        keys.sort();
+        self.log(
+            LogKind::Warn,
+            format!(
+                "全局热键注册失败（SetWindowsHookEx 未就绪）：已配置 {:?}；应用继续运行，可改绑后重试",
+                keys
+            ),
+        );
+        for conflict in self.model.config.hotkey_conflicts() {
+            self.log(LogKind::Warn, format!("快捷键冲突：{conflict}"));
+        }
     }
 
     fn stop_hotkeys(&mut self) {
@@ -326,11 +488,12 @@ impl H2ACApp {
         if self.icon_rx.is_some() {
             return;
         }
+        // 在线获取的战备与强化都带 icon_url；本地缺图标就补齐
         let jobs: Vec<(String, String)> = self
             .plugins
             .stratagems
             .iter()
-            .filter(|p| p.source == plugin::WIKI_SOURCE)
+            .filter(|p| plugin::is_wiki_source(&p.source))
             .filter(|p| p.icon_url.is_some())
             .filter(|p| !self.model.icons.has(&p.icon))
             .map(|p| (p.icon.clone(), p.icon_url.clone().unwrap_or_default()))
@@ -373,15 +536,17 @@ impl H2ACApp {
             }
         });
     }
-
 }
 
 impl eframe::App for H2ACApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // 计算当前窗口对应的缩放比例
         let sr = ctx.screen_rect();
-        let (dw, dh) = if self.model.compact {
-            (theme::COMPACT_DESIGN_W, theme::COMPACT_DESIGN_H)
+        let (dw, dh) = if self.model.view_mode.is_compact() {
+            (
+                crate::compact_mode::config::OVERLAY_DESIGN_W,
+                crate::compact_mode::config::OVERLAY_DESIGN_H,
+            )
         } else {
             (theme::DESIGN_W, theme::DESIGN_H)
         };
@@ -403,21 +568,38 @@ impl eframe::App for H2ACApp {
             match action {
                 hotkey::HotkeyAction::Slot(slot) => self.execute_slot(slot),
                 hotkey::HotkeyAction::ToggleListening => self.toggle_listening(),
+                // 三个动作各自独立：没有任何一个会去调用另一个的切换逻辑
+                hotkey::HotkeyAction::AutoLoadout => self.auto_loadout(ctx),
+                hotkey::HotkeyAction::ToggleCompactOverlay => self.toggle_compact_overlay(ctx),
+                hotkey::HotkeyAction::CancelLoadoutSync => self.cancel_auto_loadout(),
             }
+        }
+        // Loadout Sync 日志/状态：每帧消费工作线程回传的事件（GUI 主线程不阻塞）
+        self.poll_loadout_sync();
+        // 紧凑模式：把装配结果同步到 Overlay 状态栏，并在成功后持久化预设
+        self.poll_compact_preset();
+        if self.model.loadout_sync.is_running() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if let Some(listener) = &mut self.hotkey {
             listener.poll();
         }
+        // 热键注册失败只记录、不退出；也不在任何装配状态下注销热键
+        self.check_hotkey_registration();
         // 钩子存在时保持低频重绘，保证窗口未聚焦时也能及时消费全局热键消息
         if self.hotkey.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(66));
         }
         let now = ctx.input(|i| i.time);
         for v in self.model.flash.values_mut() {
-            if *v == 0.0 { *v = now; }
+            if *v == 0.0 {
+                *v = now;
+            }
         }
         // 清理已结束的闪光动画条目
-        self.model.flash.retain(|_, &mut v| ((now - v) as f32) < theme::FLASH_DURATION);
+        self.model
+            .flash
+            .retain(|_, &mut v| ((now - v) as f32) < theme::FLASH_DURATION);
         if let Some(rx) = self.wiki.fetch_rx.take() {
             let mut still_active = true;
             while let Ok(progress) = rx.try_recv() {
@@ -425,20 +607,29 @@ impl eframe::App for H2ACApp {
                 if progress.done {
                     still_active = false;
                     if let Some(Ok(new_items)) = progress.result {
-                        // 差集比对：只保留指令序列不在内置数据库中出现的
-                        // （内置签名预计算为 HashSet，O(1) 成员判定，替代每项 O(n) 扫描重建）
-                        let truly_new: Vec<crate::stratagems::PluginStratagem> = new_items.iter()
+                        // 战备与强化来自两个页面（Stratagems / Boosters），分开入库：
+                        //   战备 → plugins/_wiki.json（source = wiki）
+                        //   强化 → plugins/_boosters.json（source = wiki_boosters，category = Boosters）
+                        // 差集比对只针对战备：强化没有方向指令，本来就不在内置数据库里。
+                        let truly_new: Vec<crate::stratagems::PluginStratagem> = new_items
+                            .iter()
+                            .filter(|item| item.source != plugin::BOOSTER_SOURCE)
                             .filter(|item| !BUILTIN_SIGNATURES.contains(&item.command.join(",")))
                             .cloned()
                             .collect();
+                        let boosters: Vec<crate::stratagems::PluginStratagem> = new_items
+                            .iter()
+                            .filter(|item| item.source == plugin::BOOSTER_SOURCE)
+                            .cloned()
+                            .collect();
                         let new_count = truly_new.len();
-                        // 分类与位置以网页为准：战备直接保留页面分类（解析器已按
-                        // 页面结构归类），不再附加 NEW (Wiki) 分类或 (Wiki) 名称后缀。
+                        let booster_count = boosters.len();
+                        // 分类与位置以网页为准：直接保留页面分类，不再附加任何后缀。
                         // 替换上一次自动获取的数据（含旧版 "(Wiki)" 后缀残留），保留用户插件。
                         self.plugins.stratagems.retain(|p| {
-                            p.source != plugin::WIKI_SOURCE && !p.name.ends_with("(Wiki)")
+                            !plugin::is_wiki_source(&p.source) && !p.name.ends_with("(Wiki)")
                         });
-                        // 写入 _wiki.json；全部命中内置时删除陈旧文件，避免重启后加载过期数据
+                        // 战备：全部命中内置时删除陈旧文件，避免重启后加载过期数据
                         if new_count > 0 {
                             let manifest = crate::stratagems::PluginManifest {
                                 id: plugin::WIKI_PLUGIN_ID.into(),
@@ -451,8 +642,36 @@ impl eframe::App for H2ACApp {
                         } else {
                             let _ = std::fs::remove_file(plugin::wiki_plugin_path());
                         }
-                        self.wiki.cache_exists = new_count > 0;
-                        self.log(LogKind::Info, format!("战备数据获取完成，新增 {} 条 → plugins/{}", new_count, plugin::WIKI_PLUGIN_FILE));
+                        // 强化：写入 _boosters.json（有数据才写，无数据不动旧文件以免误删）
+                        if booster_count > 0 {
+                            let manifest = crate::stratagems::PluginManifest {
+                                id: plugin::BOOSTER_PLUGIN_ID.into(),
+                                name: "页面自动获取的强化数据".into(),
+                                enabled: true,
+                                stratagems: boosters,
+                            };
+                            let _ = util::save_json(&plugin::booster_plugin_path(), &manifest);
+                            self.plugins.stratagems.extend(manifest.stratagems);
+                        }
+                        self.wiki.cache_exists = new_count > 0 || booster_count > 0;
+                        self.log(
+                            LogKind::Info,
+                            format!(
+                                "战备数据获取完成，新增 {} 条 → plugins/{}",
+                                new_count,
+                                plugin::WIKI_PLUGIN_FILE
+                            ),
+                        );
+                        if booster_count > 0 {
+                            self.log(
+                                LogKind::Info,
+                                format!(
+                                    "强化数据获取完成，共 {} 条 → plugins/{}",
+                                    booster_count,
+                                    plugin::BOOSTER_PLUGIN_FILE
+                                ),
+                            );
+                        }
                         // 本地无图标的战备 → 从页面图标源在线补齐
                         self.start_icon_backfill();
                     } else if let Some(Err(e)) = progress.result {
@@ -504,8 +723,10 @@ impl eframe::App for H2ACApp {
                         );
                     }
                 }
-                self.wiki.fetch_status =
-                    format!("正在补齐图标 {}/{}…", self.icon_jobs_done, self.icon_jobs_total);
+                self.wiki.fetch_status = format!(
+                    "正在补齐图标 {}/{}…",
+                    self.icon_jobs_done, self.icon_jobs_total
+                );
             }
 
             if self.icon_jobs_done >= self.icon_jobs_total {
@@ -524,15 +745,26 @@ impl eframe::App for H2ACApp {
             }
         }
 
-        if self.model.compact {
-            self.show_compact(ctx);
-        } else {
-            main_view::show_main(self, ctx);
+        match self.model.view_mode {
+            state::ViewMode::Compact => {
+                // Overlay 与主窗口共用同一个 eframe 窗口：隐藏期间只是 alpha=0，
+                // 因此这里必须继续渲染（不渲染会让事件循环空转、热键动作排队）。
+                crate::ui::preset_overlay::show_preset_overlay(self, ctx);
+            }
+            state::ViewMode::Main => main_view::show_main(self, ctx),
         }
     }
 }
 
 fn main() -> Result<(), eframe::Error> {
+    // 视觉识别 CLI（vision-debug / vision-dataset / vision-eval）：
+    // 命中即执行并退出，不启动 GUI（需求 §37）。
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(code) = crate::vision::cli::dispatch(&args) {
+            std::process::exit(code);
+        }
+    }
     std::panic::set_hook(Box::new(|info| {
         let bt = std::backtrace::Backtrace::force_capture();
         let msg = format!("PANIC: {info}\n{bt}\n");
@@ -541,8 +773,10 @@ fn main() -> Result<(), eframe::Error> {
 
     let is_admin = unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() };
     if !is_admin {
-        let _ = std::fs::write(util::app_dir().join("admin_warning.txt"),
-            "未以管理员身份运行。如果游戏内按键无反应，请右键 h2ac-rs.exe → 以管理员身份运行。");
+        let _ = std::fs::write(
+            util::app_dir().join("admin_warning.txt"),
+            "未以管理员身份运行。如果游戏内按键无反应，请右键 h2ac-rs.exe → 以管理员身份运行。",
+        );
     }
 
     // 加载应用图标
@@ -583,7 +817,10 @@ mod tests {
 
     #[test]
     fn listen_hotkey_wins_over_slot_hotkey() {
-        let mut cfg = config::Config { listen_hotkey: "f8".into(), ..Default::default() };
+        let mut cfg = config::Config {
+            listen_hotkey: "f8".into(),
+            ..Default::default()
+        };
         cfg.slot_hotkeys.insert("0".into(), "f8".into());
         cfg.slot_hotkeys.insert("1".into(), ",".into());
 
@@ -593,12 +830,145 @@ mod tests {
     }
 
     #[test]
-    fn muted_map_contains_only_listen_hotkey() {
-        let mut cfg = config::Config { listen_hotkey: "slash".into(), ..Default::default() };
-        cfg.slot_hotkeys.insert("0".into(), ".".into());
+    fn three_global_actions_are_bound_independently() {
+        // §1 / §17：三个动作互相正交，且都不依赖浮窗可见性
+        let mut cfg = config::Config::default();
+        cfg.slot_hotkeys.insert("5".into(), "u".into());
+        let map = H2ACApp::hotkey_action_map(&cfg, true);
+        assert_eq!(map.get("f7"), Some(&HotkeyAction::AutoLoadout));
+        assert_eq!(
+            map.get("ctrl+shift+f9"),
+            Some(&HotkeyAction::CancelLoadoutSync)
+        );
+        assert_eq!(
+            map.get("ctrl+shift+f7"),
+            Some(&HotkeyAction::ToggleCompactOverlay)
+        );
+        assert_eq!(map.get("u"), Some(&HotkeyAction::Slot(5)));
+        // 三个动作必须是三个不同的键
+        let mut keys: Vec<&String> = map
+            .iter()
+            .filter(|(_, a)| {
+                matches!(
+                    a,
+                    HotkeyAction::AutoLoadout
+                        | HotkeyAction::CancelLoadoutSync
+                        | HotkeyAction::ToggleCompactOverlay
+                )
+            })
+            .map(|(k, _)| k)
+            .collect();
+        keys.sort();
+        assert_eq!(keys.len(), 3, "{keys:?}");
+    }
 
-        let map = H2ACApp::hotkey_action_map(&cfg, false);
-        assert_eq!(map.get("/"), Some(&HotkeyAction::ToggleListening));
-        assert!(!map.contains_key("."));
+    #[test]
+    fn auto_and_cancel_hotkeys_survive_compact_mode_being_disabled() {
+        // 取消 / 自动装配属于 Loadout Sync，不因紧凑模式关闭而消失（§1.B / §1.C）
+        let mut cfg = config::Config::default();
+        cfg.compact_mode.enabled = false;
+        let map = H2ACApp::hotkey_action_map(&cfg, true);
+        assert_eq!(map.get("f7"), Some(&HotkeyAction::AutoLoadout));
+        assert_eq!(
+            map.get("ctrl+shift+f9"),
+            Some(&HotkeyAction::CancelLoadoutSync)
+        );
+        assert_eq!(
+            map.get("ctrl+shift+f7"),
+            None,
+            "紧凑模式关闭则不注册浮窗热键"
+        );
+    }
+
+    #[test]
+    fn auto_loadout_hotkey_is_the_only_binding_for_auto_loadout() {
+        // 只允许一个 Auto Loadout 热键：旧配置里的紧凑专用热键必须迁移过来
+        let cfg: config::Config = serde_json::from_str(
+            // 旧版配置里存在紧凑专用自动装配热键字段：解析时应被忽略，不得产生第二个绑定
+            r#"{"loadout_sync_hotkey":"f7","compact_mode":{"toggle_hotkey":"ctrl+shift+f7","auto_loadout_hotkey":"ctrl+shift+f8","cancel_hotkey":"ctrl+shift+f10"}}"#,
+        )
+        .unwrap();
+        let map = H2ACApp::hotkey_action_map(&cfg, true);
+        let auto_count = map
+            .values()
+            .filter(|a| **a == HotkeyAction::AutoLoadout)
+            .count();
+        assert_eq!(auto_count, 1, "自动装配只能有一个热键绑定：{map:?}");
+    }
+
+    #[test]
+    fn hotkeys_can_be_rebound_and_disabled() {
+        let mut cfg = config::Config {
+            loadout_sync_hotkey: "Ctrl + Alt + F10".into(),
+            loadout_sync_cancel_hotkey: "ctrl+alt+f11".into(),
+            ..Default::default()
+        };
+        cfg.compact_mode.toggle_hotkey = "ctrl+alt+f12".into();
+        let map = H2ACApp::hotkey_action_map(&cfg, true);
+        assert_eq!(map.get("ctrl+alt+f10"), Some(&HotkeyAction::AutoLoadout));
+        assert_eq!(
+            map.get("ctrl+alt+f11"),
+            Some(&HotkeyAction::CancelLoadoutSync)
+        );
+        assert_eq!(
+            map.get("ctrl+alt+f12"),
+            Some(&HotkeyAction::ToggleCompactOverlay)
+        );
+        assert_eq!(map.get("f7"), None);
+    }
+
+    #[test]
+    fn legacy_compact_hotkeys_are_migrated_to_global_config() {
+        // 旧配置：自动装配/取消写在 compact_mode 段下 → 迁移到全局字段，且旧键被清掉
+        let legacy = r#"{"loadout":[1],"compact_mode":{"toggle_hotkey":"ctrl+shift+f7","auto_loadout_hotkey":"ctrl+shift+f8","cancel_hotkey":"alt+f9","opacity":0.8}}"#;
+        let mut value: serde_json::Value = serde_json::from_str(legacy).unwrap();
+        config::migrate_legacy_hotkeys(&mut value);
+        let cfg = serde_json::from_value::<config::Config>(value)
+            .unwrap()
+            .sanitize();
+        assert_eq!(cfg.loadout_sync_hotkey, "ctrl+shift+f8");
+        assert_eq!(cfg.loadout_sync_cancel_hotkey, "alt+f9");
+        assert_eq!(cfg.compact_mode.toggle_hotkey, "ctrl+shift+f7");
+        // 新配置优先，不被旧键覆盖
+        let modern = r#"{"loadout_sync_hotkey":"f6","loadout_sync_cancel_hotkey":"f5","compact_mode":{"auto_loadout_hotkey":"ctrl+shift+f8","cancel_hotkey":"alt+f9"}}"#;
+        let mut value: serde_json::Value = serde_json::from_str(modern).unwrap();
+        config::migrate_legacy_hotkeys(&mut value);
+        let cfg = serde_json::from_value::<config::Config>(value)
+            .unwrap()
+            .sanitize();
+        assert_eq!(cfg.loadout_sync_hotkey, "f6");
+        assert_eq!(cfg.loadout_sync_cancel_hotkey, "f5");
+    }
+
+    #[test]
+    fn compact_hotkeys_do_not_shadow_existing_bindings_by_accident() {
+        let cfg = config::Config::default();
+        assert!(
+            cfg.hotkey_conflicts().is_empty(),
+            "{:?}",
+            cfg.hotkey_conflicts()
+        );
+        // 故意制造冲突：浮窗热键与槽位热键相同
+        let mut clash = config::Config::default();
+        clash
+            .slot_hotkeys
+            .insert("3".into(), "ctrl+shift+f7".into());
+        let conflicts = clash.hotkey_conflicts();
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert!(
+            conflicts[0].to_uppercase().contains("CTRL+SHIFT+F7"),
+            "冲突提示必须指出具体按键: {}",
+            conflicts[0]
+        );
+    }
+
+    #[test]
+    fn legacy_config_without_compact_section_still_loads() {
+        let cfg: config::Config = serde_json::from_str(r#"{"loadout":[1],"listen_hotkey":"f8"}"#)
+            .expect("旧配置必须能加载");
+        assert_eq!(cfg.compact_mode.toggle_hotkey, "ctrl+shift+f7");
+        assert_eq!(cfg.loadout_sync_hotkey, "f7");
+        assert_eq!(cfg.loadout_sync_cancel_hotkey, "ctrl+shift+f9");
+        assert!(cfg.compact_mode.enabled);
     }
 }

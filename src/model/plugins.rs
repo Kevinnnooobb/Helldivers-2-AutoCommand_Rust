@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use crate::config;
-use crate::H2ACApp;
-use crate::LogKind;
 use crate::plugin;
 use crate::stratagems::{PluginStratagem, PLUGIN_SLOT_MARK};
+use crate::H2ACApp;
+use crate::LogKind;
 
 /// 只保留与 loadout 哨兵一致的插件槽位条目：
 /// 键解析失败、越界、以及「loadout 已不是插件哨兵但 plugin_slots 仍有残留」的
@@ -75,7 +75,7 @@ mod tests {
     fn consistent_slots_keep_valid_and_drop_stale() {
         let mut loadout = vec![None; crate::config::SLOT_COUNT];
         loadout[1] = Some(PLUGIN_SLOT_MARK); // 合法插件槽
-        loadout[2] = Some(5);                // 内置战备索引（旧 bug：plugin_slots 残留）
+        loadout[2] = Some(5); // 内置战备索引（旧 bug：plugin_slots 残留）
         let mut raw = HashMap::new();
         raw.insert("1".to_string(), plugin("valid"));
         raw.insert("2".to_string(), plugin("stale-over-base"));

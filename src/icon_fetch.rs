@@ -8,8 +8,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-const USER_AGENT: &str =
-    "h2ac-rs/1.1 (Helldivers 2 Auto Stratagem Caller; icon fetcher)";
+const USER_AGENT: &str = "h2ac-rs/1.1 (Helldivers 2 Auto Stratagem Caller; icon fetcher)";
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// 输出 PNG 边长（与内置图标纹理同尺寸，文件也保持此分辨率）
 const ICON_PX: u32 = 128;
@@ -52,8 +51,8 @@ pub fn svg_to_png(svg: &[u8]) -> Result<Vec<u8>, String> {
     let scale = (ICON_PX as f32 / w).min(ICON_PX as f32 / h);
     let transform = tiny_skia::Transform::from_scale(scale, scale);
 
-    let mut pixmap = tiny_skia::Pixmap::new(ICON_PX, ICON_PX)
-        .ok_or_else(|| "无法分配栅格画布".to_string())?;
+    let mut pixmap =
+        tiny_skia::Pixmap::new(ICON_PX, ICON_PX).ok_or_else(|| "无法分配栅格画布".to_string())?;
     let mut canvas = pixmap.as_mut();
     resvg::render(&tree, transform, &mut canvas);
 

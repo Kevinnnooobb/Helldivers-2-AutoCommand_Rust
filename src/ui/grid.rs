@@ -1,12 +1,12 @@
-use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, Vec2,
-};
 use crate::config;
 use crate::theme::*;
+use crate::ui::detail::render_detail;
 use crate::widgets::*;
 use crate::H2ACApp;
 use crate::LogKind;
-use crate::ui::detail::render_detail;
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, Vec2,
+};
 
 pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) {
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 28.0));
@@ -16,19 +16,63 @@ pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetr
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     h.horizontal(|ui| {
-        ui.label(egui::RichText::new("战备配置").font(m.hud_b(16.0)).color(TEXT));
-        ui.label(egui::RichText::new("LOADOUT").font(m.hud(11.0)).color(TEXT_DIM));
+        ui.label(
+            egui::RichText::new("战备配置")
+                .font(m.hud_b(16.0))
+                .color(TEXT),
+        );
+        ui.label(
+            egui::RichText::new("LOADOUT")
+                .font(m.hud(11.0))
+                .color(TEXT_DIM),
+        );
         let hint = if app.model.armed.is_some() {
             "待命装填中 — 点击右侧战备库装入，ESC 取消"
         } else {
-            "点选槽位待命 · 双击执行 · 右键快捷操作"
+            "上排 TASK 战中调用 · 下排 S1~S4/BOOSTER 自动装配 · 双击执行"
         };
-        ui.label(egui::RichText::new(hint).font(m.hud(11.0)).color(if app.model.armed.is_some() { GOLD } else { TEXT_DIM }));
+        ui.label(
+            egui::RichText::new(hint)
+                .font(m.hud(11.0))
+                .color(if app.model.armed.is_some() {
+                    GOLD
+                } else {
+                    TEXT_DIM
+                }),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if hud_button(ui, "清空全部", Vec2::new(76.0, 24.0), m, DANGER, true).clicked() {
                 app.clear_all_slots();
                 app.log(LogKind::Warn, "全部槽位已清空");
             }
+            // 自动装配（= 全局快捷键的等价入口）：运行中再次点击即取消
+            let running = app.loadout_sync_running();
+            let ready = app.loadout_sync_ready();
+            let label = if running {
+                "取消装配"
+            } else {
+                "自动装配"
+            };
+            let accent = if running {
+                DANGER
+            } else if ready {
+                GOLD
+            } else {
+                TEXT_SUB
+            };
+            let resp = hud_button(ui, label, Vec2::new(76.0, 24.0), m, accent, false);
+            if resp.clicked() {
+                app.toggle_loadout_sync();
+            }
+            let hk = app.model.config.loadout_sync_hotkey.clone();
+            resp.on_hover_text(if hk.is_empty() {
+                "把下排 Slot06~10 同步到 HELLDIVERS 2 当前 Loadout（未绑定快捷键）".to_string()
+            } else {
+                format!(
+                    "把下排 Slot06~10 同步到 HELLDIVERS 2 当前 Loadout · 快捷键 {}",
+                    hk.to_uppercase()
+                )
+            });
         });
     });
 
@@ -42,10 +86,7 @@ pub fn render_left_column(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetr
     );
     render_grid(app, ui, grid_rect, m);
 
-    let detail = Rect::from_min_max(
-        Pos2::new(rect.left(), grid_rect.bottom() + 8.0),
-        rect.max,
-    );
+    let detail = Rect::from_min_max(Pos2::new(rect.left(), grid_rect.bottom() + 8.0), rect.max);
     render_detail(app, ui, detail, m);
 }
 
@@ -94,12 +135,43 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
     }
 
     p.text(
-        Pos2::new(rect.left() + m.slot_tile_num_x(), rect.top() + m.slot_tile_num_y()),
+        Pos2::new(
+            rect.left() + m.slot_tile_num_x(),
+            rect.top() + m.slot_tile_num_y(),
+        ),
         Align2::LEFT_TOP,
         format!("{:02}", idx + 1),
         m.hud_b(10.0),
         TEXT_DIM,
     );
+
+    // 槽位语义标注：上排 TASK（任务中手动调用）；下排 Slot06~09 = 游戏 Stratagem 1~4，
+    // Slot10 = 游戏 Booster。语义只是显示层，不改变任何现有槽位行为。
+    let (tag, tag_color) = match idx {
+        0..=4 => ("TASK", TEXT_DIM),
+        5 => ("S1", GOLD_DIM),
+        6 => ("S2", GOLD_DIM),
+        7 => ("S3", GOLD_DIM),
+        8 => ("S4", GOLD_DIM),
+        _ => ("BOOSTER", GOLD_DIM),
+    };
+    p.text(
+        Pos2::new(rect.center().x, rect.top() + 5.0),
+        Align2::CENTER_TOP,
+        tag,
+        m.hud(8.5),
+        tag_color,
+    );
+    if idx >= 5 {
+        p.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(rect.left() + 1.0, rect.top() + 4.0),
+                Vec2::new(2.0, 14.0),
+            ),
+            CornerRadius::ZERO,
+            GOLD_DIM,
+        );
+    }
 
     let now = ui.ctx().input(|i| i.time);
     if let Some(&t0) = app.model.flash.get(&idx) {
@@ -111,7 +183,12 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
                 Color32::from_rgba_unmultiplied(0xF5, 0xC8, 0x42, a / 3),
                 Stroke::NONE,
             ));
-            corner_brackets(&p, rect.shrink(3.0), 8.0, Color32::from_rgba_unmultiplied(0xF5, 0xC8, 0x42, a));
+            corner_brackets(
+                &p,
+                rect.shrink(3.0),
+                8.0,
+                Color32::from_rgba_unmultiplied(0xF5, 0xC8, 0x42, a),
+            );
             ui.ctx().request_repaint();
         }
     }
@@ -158,8 +235,14 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
         );
 
         let strip = Rect::from_min_max(
-            Pos2::new(rect.left() + 10.0, rect.bottom() - m.slot_cat_bar_y_offset()),
-            Pos2::new(rect.right() - 10.0, rect.bottom() - m.slot_cat_bar_y_offset() + m.slot_cat_bar_h()),
+            Pos2::new(
+                rect.left() + 10.0,
+                rect.bottom() - m.slot_cat_bar_y_offset(),
+            ),
+            Pos2::new(
+                rect.right() - 10.0,
+                rect.bottom() - m.slot_cat_bar_y_offset() + m.slot_cat_bar_h(),
+            ),
         );
         p.rect_filled(strip, CornerRadius::ZERO, accent);
     } else {
@@ -174,12 +257,27 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
 
     if let Some(hk) = app.model.config.slot_hotkeys.get(&idx.to_string()) {
         let badge = Rect::from_min_size(
-            Pos2::new(rect.right() - m.slot_hotkey_badge_x_offset(), rect.top() + m.slot_hotkey_badge_y_offset()),
+            Pos2::new(
+                rect.right() - m.slot_hotkey_badge_x_offset(),
+                rect.top() + m.slot_hotkey_badge_y_offset(),
+            ),
             Vec2::new(m.slot_hotkey_badge_w(), m.slot_hotkey_badge_h()),
         );
-        paint_chamfer(&p, badge, 3.0, BG_DEEP, Stroke::new(1.0, OK.gamma_multiply(0.6)));
+        paint_chamfer(
+            &p,
+            badge,
+            3.0,
+            BG_DEEP,
+            Stroke::new(1.0, OK.gamma_multiply(0.6)),
+        );
         let hf = m.fit_font(&p, &hk.to_uppercase(), 17.0, &[9.5, 8.0], true);
-        p.text(badge.center(), Align2::CENTER_CENTER, hk.to_uppercase(), hf, OK);
+        p.text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            hk.to_uppercase(),
+            hf,
+            OK,
+        );
     }
 
     if resp.hovered() {
@@ -187,14 +285,21 @@ pub fn render_slot_tile(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, idx: usize, 
     }
     if resp.clicked() {
         app.model.detail_slot = Some(idx);
-        app.model.armed = if app.model.armed == Some(idx) { None } else { Some(idx) };
+        app.model.armed = if app.model.armed == Some(idx) {
+            None
+        } else {
+            Some(idx)
+        };
         app.context = None;
     }
     if resp.double_clicked() && filled {
         app.execute_slot(idx);
     }
     if resp.secondary_clicked() {
-        app.context = Some(crate::ContextState { slot: idx, pos: rect.min });
+        app.context = Some(crate::ContextState {
+            slot: idx,
+            pos: rect.min,
+        });
         app.model.armed = None;
     }
 }

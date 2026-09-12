@@ -6,9 +6,8 @@ use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
-    VK_LMENU, VK_LSHIFT, VK_RMENU, VK_RSHIFT,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, VK_LMENU, VK_LSHIFT, VK_RMENU, VK_RSHIFT,
 };
 
 use crate::config::Config;
@@ -43,12 +42,18 @@ static SCANCODE_MAP: LazyLock<HashMap<&'static str, ScanData>> = LazyLock::new(|
     m.insert("down", (0x50, true));
     m.insert("left", (0x4B, true));
     m.insert("right", (0x4D, true));
-    m.insert("f1", (0x3B, false)); m.insert("f2", (0x3C, false));
-    m.insert("f3", (0x3D, false)); m.insert("f4", (0x3E, false));
-    m.insert("f5", (0x3F, false)); m.insert("f6", (0x40, false));
-    m.insert("f7", (0x41, false)); m.insert("f8", (0x42, false));
-    m.insert("f9", (0x43, false)); m.insert("f10", (0x44, false));
-    m.insert("f11", (0x57, false)); m.insert("f12", (0x58, false));
+    m.insert("f1", (0x3B, false));
+    m.insert("f2", (0x3C, false));
+    m.insert("f3", (0x3D, false));
+    m.insert("f4", (0x3E, false));
+    m.insert("f5", (0x3F, false));
+    m.insert("f6", (0x40, false));
+    m.insert("f7", (0x41, false));
+    m.insert("f8", (0x42, false));
+    m.insert("f9", (0x43, false));
+    m.insert("f10", (0x44, false));
+    m.insert("f11", (0x57, false));
+    m.insert("f12", (0x58, false));
     m.insert("space", (0x39, false));
     m.insert("enter", (0x1C, false));
     m.insert("tab", (0x0F, false));
@@ -73,19 +78,47 @@ static SCANCODE_MAP: LazyLock<HashMap<&'static str, ScanData>> = LazyLock::new(|
     m.insert("+", (0x4E, false));
     m.insert("capslock", (0x3A, false));
     let digits: [(u16, &str); 10] = [
-        (0x02, "1"), (0x03, "2"), (0x04, "3"), (0x05, "4"), (0x06, "5"),
-        (0x07, "6"), (0x08, "7"), (0x09, "8"), (0x0A, "9"), (0x0B, "0"),
+        (0x02, "1"),
+        (0x03, "2"),
+        (0x04, "3"),
+        (0x05, "4"),
+        (0x06, "5"),
+        (0x07, "6"),
+        (0x08, "7"),
+        (0x09, "8"),
+        (0x0A, "9"),
+        (0x0B, "0"),
     ];
     for (sc, name) in digits {
         m.insert(name, (sc, false));
     }
     let letters: [(u16, char); 26] = [
-        (0x10, 'q'), (0x11, 'w'), (0x12, 'e'), (0x13, 'r'), (0x14, 't'),
-        (0x15, 'y'), (0x16, 'u'), (0x17, 'i'), (0x18, 'o'), (0x19, 'p'),
-        (0x1E, 'a'), (0x1F, 's'), (0x20, 'd'), (0x21, 'f'), (0x22, 'g'),
-        (0x23, 'h'), (0x24, 'j'), (0x25, 'k'), (0x26, 'l'),
-        (0x2C, 'z'), (0x2D, 'x'), (0x2E, 'c'), (0x2F, 'v'), (0x30, 'b'),
-        (0x31, 'n'), (0x32, 'm'),
+        (0x10, 'q'),
+        (0x11, 'w'),
+        (0x12, 'e'),
+        (0x13, 'r'),
+        (0x14, 't'),
+        (0x15, 'y'),
+        (0x16, 'u'),
+        (0x17, 'i'),
+        (0x18, 'o'),
+        (0x19, 'p'),
+        (0x1E, 'a'),
+        (0x1F, 's'),
+        (0x20, 'd'),
+        (0x21, 'f'),
+        (0x22, 'g'),
+        (0x23, 'h'),
+        (0x24, 'j'),
+        (0x25, 'k'),
+        (0x26, 'l'),
+        (0x2C, 'z'),
+        (0x2D, 'x'),
+        (0x2E, 'c'),
+        (0x2F, 'v'),
+        (0x30, 'b'),
+        (0x31, 'n'),
+        (0x32, 'm'),
     ];
     for (sc, c) in letters {
         // leak string to get &'static str
@@ -161,7 +194,10 @@ pub fn execute_stratagem(s: &Stratagem, config: &Config) -> Result<(), String> {
 
 /// 执行插件战备指令序列（字符串数组版本）
 pub fn execute_plugin(config: &Config, command: &[String]) -> Result<(), String> {
-    let arrows: Vec<&str> = command.iter().map(|c| dir_to_arrow_or_raw(c.as_str())).collect();
+    let arrows: Vec<&str> = command
+        .iter()
+        .map(|c| dir_to_arrow_or_raw(c.as_str()))
+        .collect();
     execute_command(config, &arrows)
 }
 
@@ -185,7 +221,11 @@ fn execute_command(config: &Config, command: &[&str]) -> Result<(), String> {
     thread::sleep(Duration::from_secs_f64(pre_delay));
 
     for dir in command.iter() {
-        let mapped = config.key_bindings.get(*dir).map(String::as_str).unwrap_or(*dir);
+        let mapped = config
+            .key_bindings
+            .get(*dir)
+            .map(String::as_str)
+            .unwrap_or(*dir);
         thread::sleep(Duration::from_secs_f64(delay));
         record_first(&mut first_err, press_key(mapped));
         thread::sleep(Duration::from_secs_f64(delay));
@@ -230,9 +270,18 @@ mod tests {
         assert!(lookup_scancode("W").is_ok());
         assert!(lookup_scancode("↑").is_ok());
         assert!(lookup_scancode("up").is_ok());
-        assert_eq!(lookup_scancode("escape").unwrap(), lookup_scancode("esc").unwrap());
-        assert_eq!(lookup_scancode("control").unwrap(), lookup_scancode("ctrl").unwrap());
-        assert_eq!(lookup_scancode("return").unwrap(), lookup_scancode("enter").unwrap());
+        assert_eq!(
+            lookup_scancode("escape").unwrap(),
+            lookup_scancode("esc").unwrap()
+        );
+        assert_eq!(
+            lookup_scancode("control").unwrap(),
+            lookup_scancode("ctrl").unwrap()
+        );
+        assert_eq!(
+            lookup_scancode("return").unwrap(),
+            lookup_scancode("enter").unwrap()
+        );
         assert!(lookup_scancode("not-a-key").is_err());
     }
 
@@ -254,10 +303,19 @@ mod tests {
     fn manual_arrow_commands_map_to_same_keys_as_english() {
         // 手动创建的插件（箭头格式）与 Wiki 插件（英文格式）必须注入完全相同的按键
         let cfg = Config::default();
-        for (arrow, english) in [("↑", "up"), ("↓", "down"), ("←", "left"), ("→", "right")] {
+        for (arrow, english) in [("↑", "up"), ("↓", "down"), ("←", "left"), ("→", "right")]
+        {
             assert_eq!(dir_to_arrow_or_raw(arrow), dir_to_arrow_or_raw(english));
-            let key_arrow = cfg.key_bindings.get(dir_to_arrow_or_raw(arrow)).map(String::as_str).unwrap_or(arrow);
-            let key_english = cfg.key_bindings.get(dir_to_arrow_or_raw(english)).map(String::as_str).unwrap_or(english);
+            let key_arrow = cfg
+                .key_bindings
+                .get(dir_to_arrow_or_raw(arrow))
+                .map(String::as_str)
+                .unwrap_or(arrow);
+            let key_english = cfg
+                .key_bindings
+                .get(dir_to_arrow_or_raw(english))
+                .map(String::as_str)
+                .unwrap_or(english);
             assert_eq!(key_arrow, key_english);
         }
     }

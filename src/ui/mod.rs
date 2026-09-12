@@ -1,8 +1,9 @@
-pub mod common;
-pub mod topbar;
-pub mod grid;
-pub mod detail;
-pub mod library;
 pub mod bottombar;
+pub mod common;
+pub mod detail;
+pub mod grid;
+pub mod library;
 pub mod modals;
 pub mod plugin_creator;
+pub mod preset_overlay;
+pub mod topbar;

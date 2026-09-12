@@ -1,18 +1,23 @@
-use eframe::egui::{self, Context, Key, Vec2};
-use crate::H2ACApp;
+use crate::stratagems::{StratagemRef, STRATAGEMS};
 use crate::theme::*;
 use crate::widgets::*;
-use crate::stratagems::{STRATAGEMS, StratagemRef};
+use crate::H2ACApp;
 use crate::LogKind;
+use eframe::egui::{self, Context, Key, Vec2};
 
 pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
-    let Some(ref lib_ctx) = app.library_context.clone() else { return };
+    let Some(ref lib_ctx) = app.library_context.clone() else {
+        return;
+    };
 
     let num_rows = 1
         + if app.model.armed.is_some() { 1 } else { 0 }
         + 1
         + if lib_ctx.is_plugin { 1 } else { 0 };
-    let size = Vec2::new(m.modal_lib_ctx_w(), num_rows as f32 * m.modal_row_h() + m.modal_pad_y());
+    let size = Vec2::new(
+        m.modal_lib_ctx_w(),
+        num_rows as f32 * m.modal_row_h() + m.modal_pad_y(),
+    );
 
     let mut close = false;
     let area = egui::Area::new(egui::Id::new("lib_ctx_menu"))
@@ -23,13 +28,25 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetri
                 ui.spacing_mut().item_spacing.y = 4.0;
 
                 if app.model.armed.is_some()
-                    && hud_button(ui, "装入槽位", Vec2::new(ui.available_width(), 26.0), m, GOLD, false).clicked()
+                    && hud_button(
+                        ui,
+                        "装入槽位",
+                        Vec2::new(ui.available_width(), 26.0),
+                        m,
+                        GOLD,
+                        false,
+                    )
+                    .clicked()
                 {
                     close = true;
                     let name = lib_ctx.name.clone();
                     if lib_ctx.is_plugin {
-                        if let Some(clone) = app.plugins.stratagems.iter()
-                            .find(|p| p.name == name).cloned()
+                        if let Some(clone) = app
+                            .plugins
+                            .stratagems
+                            .iter()
+                            .find(|p| p.name == name)
+                            .cloned()
                         {
                             let sref = StratagemRef::Plugin(&clone);
                             app.assign_stratagem_ref(&sref);
@@ -43,10 +60,20 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetri
                 let mut cat_sel = lib_ctx.category.clone();
                 egui::ComboBox::from_id_salt("lib_ctx_cat")
                     .width(ui.available_width())
-                    .selected_text(egui::RichText::new(super::cat_label(&cat_sel)).font(m.hud(12.0)).color(category_color(&cat_sel)))
+                    .selected_text(
+                        egui::RichText::new(super::cat_label(&cat_sel))
+                            .font(m.hud(12.0))
+                            .color(category_color(&cat_sel)),
+                    )
                     .show_ui(ui, |ui| {
                         for cat in &app.lib_categories() {
-                            if ui.selectable_label(false, egui::RichText::new(super::cat_label(cat)).font(m.hud(12.0))).clicked() {
+                            if ui
+                                .selectable_label(
+                                    false,
+                                    egui::RichText::new(super::cat_label(cat)).font(m.hud(12.0)),
+                                )
+                                .clicked()
+                            {
                                 cat_sel = cat.clone();
                                 app.set_category_override(&lib_ctx.name, cat);
                                 app.log(LogKind::Info, format!("分类: {} → {}", lib_ctx.name, cat));
@@ -55,7 +82,16 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetri
                         }
                     });
 
-                if hud_button(ui, "设 置", Vec2::new(ui.available_width(), 26.0), m, CAT_EQUIP, false).clicked() {
+                if hud_button(
+                    ui,
+                    "设 置",
+                    Vec2::new(ui.available_width(), 26.0),
+                    m,
+                    CAT_EQUIP,
+                    false,
+                )
+                .clicked()
+                {
                     close = true;
                     app.stratagem_settings.visible = true;
                     app.stratagem_settings.name = lib_ctx.name.clone();
@@ -68,7 +104,15 @@ pub fn render_library_context_menu(app: &mut H2ACApp, ctx: &Context, m: &UiMetri
                 }
 
                 if lib_ctx.is_plugin
-                    && hud_button(ui, "删 除", Vec2::new(ui.available_width(), 26.0), m, DANGER, true).clicked()
+                    && hud_button(
+                        ui,
+                        "删 除",
+                        Vec2::new(ui.available_width(), 26.0),
+                        m,
+                        DANGER,
+                        true,
+                    )
+                    .clicked()
                 {
                     close = true;
                     app.delete_plugin_stratagem(&lib_ctx.name);

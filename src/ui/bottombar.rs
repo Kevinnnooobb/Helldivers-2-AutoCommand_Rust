@@ -1,14 +1,18 @@
-use eframe::egui::{self, Align2, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 use crate::config;
 use crate::theme::*;
 use crate::widgets::*;
 use crate::H2ACApp;
 use crate::LogKind;
+use eframe::egui::{self, Align2, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 
 pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetrics) {
     let p = ui.painter().clone();
     p.rect_filled(rect, CornerRadius::ZERO, BG_PANEL);
-    p.hline(rect.left()..=rect.right(), rect.top() + 0.5, Stroke::new(1.0, LINE));
+    p.hline(
+        rect.left()..=rect.right(),
+        rect.top() + 0.5,
+        Stroke::new(1.0, LINE),
+    );
 
     let mut bar = ui.new_child(
         egui::UiBuilder::new()
@@ -40,13 +44,21 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetric
         {
             config::delete_profile(&app.model.current_profile);
             app.refresh_profiles();
-            app.log(LogKind::Warn, format!("Profile 已删除: {}", app.model.current_profile));
+            app.log(
+                LogKind::Warn,
+                format!("Profile 已删除: {}", app.model.current_profile),
+            );
             app.model.current_profile.clear();
         }
         if glyph_button(ui, Glyph::Save, 26.0, "保存为 Profile").clicked()
             && !app.model.save_profile_name.is_empty()
         {
-            let ps: std::collections::HashMap<String, _> = app.model.plugin_slots.iter().map(|(k,v)| (k.to_string(), v.clone())).collect();
+            let ps: std::collections::HashMap<String, _> = app
+                .model
+                .plugin_slots
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect();
             config::save_profile(
                 &app.model.save_profile_name,
                 &app.model.slots,
@@ -57,7 +69,10 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetric
             app.model.config.last_profile = app.model.current_profile.clone();
             config::save_config(&app.model.config);
             app.refresh_profiles();
-            app.log(LogKind::Info, format!("已保存 Profile: {}", app.model.save_profile_name));
+            app.log(
+                LogKind::Info,
+                format!("已保存 Profile: {}", app.model.save_profile_name),
+            );
         }
         if glyph_button(ui, Glyph::Play, 26.0, "加载所选 Profile").clicked()
             && !app.model.current_profile.is_empty()
@@ -66,7 +81,11 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetric
         }
         ui.add(
             egui::TextEdit::singleline(&mut app.model.save_profile_name)
-                .hint_text(egui::RichText::new("新Profile名").font(m.hud(12.0)).color(TEXT_DIM))
+                .hint_text(
+                    egui::RichText::new("新Profile名")
+                        .font(m.hud(12.0))
+                        .color(TEXT_DIM),
+                )
                 .font(m.hud(12.0))
                 .desired_width(90.0),
         );
@@ -76,8 +95,12 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetric
         egui::ComboBox::from_id_salt("profile_combo")
             .width(120.0)
             .selected_text(
-                egui::RichText::new(if sel.is_empty() { "选择 Profile" } else { &sel })
-                    .font(m.hud(12.0)),
+                egui::RichText::new(if sel.is_empty() {
+                    "选择 Profile"
+                } else {
+                    &sel
+                })
+                .font(m.hud(12.0)),
             )
             .show_ui(ui, |ui| {
                 for n in names {
@@ -87,6 +110,10 @@ pub fn render_bottombar(app: &mut H2ACApp, ui: &mut Ui, rect: Rect, m: &UiMetric
         if sel != app.model.current_profile && !sel.is_empty() {
             app.model.current_profile = sel;
         }
-        ui.label(egui::RichText::new("PROFILE").font(m.hud(10.0)).color(TEXT_DIM));
+        ui.label(
+            egui::RichText::new("PROFILE")
+                .font(m.hud(10.0))
+                .color(TEXT_DIM),
+        );
     });
 }

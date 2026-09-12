@@ -8,6 +8,24 @@ use crate::stratagems::PluginStratagem;
 use crate::theme::UiMetrics;
 use crate::wiki_fetcher;
 
+/// 窗口视图模式：主界面 / 紧凑模式（游戏内配装预设 Overlay）
+///
+/// 紧凑模式自 v1.2 起就是配装预设 Overlay：原来的 554x56 迷你执行条已被它取代
+/// （浮窗同时显示上排 TASK 槽与下排 LOADOUT 槽，下排用于自动装配）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// 完整主窗口（1100x640）
+    Main,
+    /// 紧凑模式：游戏内配装预设 Overlay
+    Compact,
+}
+
+impl ViewMode {
+    pub fn is_compact(self) -> bool {
+        matches!(self, Self::Compact)
+    }
+}
+
 /// 控制槽位网格、待命、执行的业务模型
 pub struct AppModel {
     pub slots: Vec<Option<usize>>,
@@ -17,7 +35,10 @@ pub struct AppModel {
     pub detail_slot: Option<usize>,
     pub listening: bool,
     pub config: Config,
-    pub compact: bool,
+    /// 当前窗口视图模式（原 `compact: bool` 的扩展：新增配装预设 Overlay）
+    pub view_mode: ViewMode,
+    /// 紧凑模式预设 Overlay 状态（草稿 + 生命周期；纯数据，业务逻辑在 model/preset.rs）
+    pub compact_preset: crate::compact_mode::CompactPresetState,
     pub flash: HashMap<usize, f64>,
     pub icons: IconStore,
     /// 调试日志开关
@@ -29,6 +50,9 @@ pub struct AppModel {
     pub scale: f32,
     /// 缩放后的 UI 尺寸缓存
     pub metrics: UiMetrics,
+    /// Loadout Sync（自动装配）运行状态句柄：AppModel 只持有状态，
+    /// 视觉算法全部在 loadout_sync 模块的工作线程里
+    pub loadout_sync: crate::loadout_sync::state::LoadoutSyncHandle,
 }
 
 /// 战备库面板状态
@@ -43,6 +67,8 @@ pub struct LibraryState {
 pub struct CaptureState {
     pub capturing: Option<usize>,
     pub capturing_listen: bool,
+    /// 正在捕获 Loadout Sync（自动装配）全局快捷键
+    pub capturing_loadout_sync: bool,
     pub captured: String,
     pub settings_capture: Option<String>,
 }

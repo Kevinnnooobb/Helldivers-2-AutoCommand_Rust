@@ -1,10 +1,10 @@
 // 配置与 Profile 管理
+use crate::stratagems::PluginStratagem;
+use crate::util;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use crate::stratagems::PluginStratagem;
-use crate::util;
 
 pub const SLOT_COUNT: usize = 10;
 
@@ -45,6 +45,21 @@ pub struct Config {
     /// 战备名 → 新分类名（运行时修改分类的持久覆盖）
     #[serde(default)]
     pub category_overrides: HashMap<String, String>,
+    /// Auto Loadout 全局快捷键（唯一入口：正常模式 / 紧凑模式 / 浮窗隐藏时都可用）
+    #[serde(default = "default_loadout_sync_hotkey")]
+    pub loadout_sync_hotkey: String,
+    /// Loadout Sync 取消快捷键（全局，独立于紧凑模式；运行中按下即停止自动化）
+    #[serde(default = "default_loadout_sync_cancel_hotkey")]
+    pub loadout_sync_cancel_hotkey: String,
+    /// Loadout Sync 自动化参数（视觉/时序），默认值可用
+    #[serde(default)]
+    pub loadout_sync: crate::loadout_sync::config::LoadoutSyncConfig,
+    /// 紧凑模式（游戏内配装预设 Overlay）：快捷键 / 透明度 / 位置
+    #[serde(default)]
+    pub compact_mode: crate::compact_mode::config::CompactModeConfig,
+    /// 战备图标视觉识别（参考坐标系 / 分割 / 模板 / 调试），所有阈值集中于此
+    #[serde(default)]
+    pub vision: crate::vision::config::VisionConfig,
 }
 
 fn default_key_bindings() -> HashMap<String, String> {
@@ -56,11 +71,32 @@ fn default_key_bindings() -> HashMap<String, String> {
     ])
 }
 
-fn default_stratagem_key() -> String { "ctrl".into() }
-fn default_key_delay() -> f64 { 0.08 }
-fn default_pre_delay() -> f64 { 0.12 }
-fn empty_loadout() -> Vec<Option<usize>> { vec![None; SLOT_COUNT] }
-fn default_true() -> bool { true }
+/// Loadout Sync 默认快捷键：F7（与默认 slot_hotkeys / listen_hotkey 不冲突；
+/// 若用户已占用，启动时会给出冲突提示并要求改绑）
+fn default_loadout_sync_hotkey() -> String {
+    "f7".into()
+}
+
+/// 取消装配：与自动装配、浮窗显示都无关的第三个独立热键
+fn default_loadout_sync_cancel_hotkey() -> String {
+    "ctrl+shift+f9".into()
+}
+
+fn default_stratagem_key() -> String {
+    "ctrl".into()
+}
+fn default_key_delay() -> f64 {
+    0.08
+}
+fn default_pre_delay() -> f64 {
+    0.12
+}
+fn empty_loadout() -> Vec<Option<usize>> {
+    vec![None; SLOT_COUNT]
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -75,6 +111,11 @@ impl Default for Config {
             listening_enabled: true,
             last_profile: String::new(),
             category_overrides: HashMap::new(),
+            loadout_sync_hotkey: default_loadout_sync_hotkey(),
+            loadout_sync_cancel_hotkey: default_loadout_sync_cancel_hotkey(),
+            loadout_sync: crate::loadout_sync::config::LoadoutSyncConfig::default(),
+            compact_mode: crate::compact_mode::config::CompactModeConfig::default(),
+            vision: crate::vision::config::VisionConfig::default(),
         }
     }
 }
@@ -84,11 +125,56 @@ pub fn load_config() -> Config {
     if !path.exists() {
         return Config::default();
     }
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Config>(&s).ok())
+    let Some(raw) = fs::read_to_string(&path).ok() else {
+        return Config::default();
+    };
+    let Some(mut value) = serde_json::from_str::<serde_json::Value>(&raw).ok() else {
+        return Config::default();
+    };
+    migrate_legacy_hotkeys(&mut value);
+    serde_json::from_value::<Config>(value)
         .unwrap_or_default()
         .sanitize()
+}
+
+/// v1.2 起自动装配 / 取消快捷键提升为全局 Loadout Sync 配置（不再属于紧凑模式）。
+///
+/// 旧配置里写在 compact_mode 段下的两个键会被迁移到新字段，随后删除旧键，
+/// 保证老用户的自定义快捷键不丢。
+pub(crate) fn migrate_legacy_hotkeys(value: &mut serde_json::Value) {
+    let Some(root) = value.as_object_mut() else {
+        return;
+    };
+    let legacy_auto = root
+        .get_mut("compact_mode")
+        .and_then(|cm| cm.as_object_mut())
+        .and_then(|cm| cm.remove("auto_loadout_hotkey"))
+        .and_then(|v| v.as_str().map(str::to_string));
+    let legacy_cancel = root
+        .get_mut("compact_mode")
+        .and_then(|cm| cm.as_object_mut())
+        .and_then(|cm| cm.remove("cancel_hotkey"))
+        .and_then(|v| v.as_str().map(str::to_string));
+
+    let is_blank = |root: &serde_json::Map<String, serde_json::Value>, key: &str| {
+        root.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+    };
+    if let Some(key) = legacy_auto {
+        if !key.trim().is_empty() && is_blank(root, "loadout_sync_hotkey") {
+            root.insert("loadout_sync_hotkey".into(), serde_json::Value::String(key));
+        }
+    }
+    if let Some(key) = legacy_cancel {
+        if !key.trim().is_empty() && is_blank(root, "loadout_sync_cancel_hotkey") {
+            root.insert(
+                "loadout_sync_cancel_hotkey".into(),
+                serde_json::Value::String(key),
+            );
+        }
+    }
 }
 
 /// 槽位列表归一化：补足/截断到 SLOT_COUNT，并把越界索引（非插件哨兵）置为空槽
@@ -105,9 +191,63 @@ fn sanitize_loadout(loadout: &mut Vec<Option<usize>>) {
 }
 
 impl Config {
-    fn sanitize(mut self) -> Self {
+    pub(crate) fn sanitize(mut self) -> Self {
         sanitize_loadout(&mut self.loadout);
+        self.loadout_sync = self.loadout_sync.clone().sanitize();
+        self.compact_mode = self.compact_mode.clone().sanitize();
+        self.loadout_sync_hotkey = crate::hotkey::normalize_key_name(&self.loadout_sync_hotkey);
+        if self.loadout_sync_hotkey == "vk(0)" {
+            self.loadout_sync_hotkey.clear();
+        }
         self
+    }
+
+    /// 全局快捷键冲突检查：listen / loadout_sync / slot 三者之间不允许重复绑同一个键。
+    /// 返回人类可读的冲突描述（空表示无冲突）。
+    pub fn hotkey_conflicts(&self) -> Vec<String> {
+        let mut seen: HashMap<String, String> = HashMap::new();
+        let mut out = Vec::new();
+        let mut check = |key: &str, owner: String, out: &mut Vec<String>| {
+            let k = crate::hotkey::normalize_hotkey(key);
+            if k.is_empty() {
+                return;
+            }
+            match seen.get(&k) {
+                Some(prev) => out.push(format!(
+                    "快捷键 {} 同时绑定了 {} 与 {}",
+                    k.to_uppercase(),
+                    prev,
+                    owner
+                )),
+                None => {
+                    seen.insert(k, owner);
+                }
+            }
+        };
+        check(&self.listen_hotkey, "监听开关".into(), &mut out);
+        check(&self.loadout_sync_hotkey, "自动装配".into(), &mut out);
+        check(
+            &self.loadout_sync_cancel_hotkey,
+            "取消装配".into(),
+            &mut out,
+        );
+        check(
+            &self.compact_mode.toggle_hotkey,
+            "紧凑浮窗".into(),
+            &mut out,
+        );
+        let mut slots: Vec<(String, String)> = self
+            .slot_hotkeys
+            .iter()
+            .filter(|(k, v)| !v.trim().is_empty() && k.parse::<usize>().is_ok())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        slots.sort_by_key(|(k, _)| k.parse::<usize>().unwrap_or(0));
+        for (slot, key) in slots {
+            let n: usize = slot.parse().unwrap_or(0) + 1;
+            check(&key, format!("槽位 {n:02}"), &mut out);
+        }
+        out
     }
 }
 
@@ -146,11 +286,19 @@ pub fn list_profiles() -> Vec<String> {
     names
 }
 
-pub fn save_profile(name: &str, loadout: &[Option<usize>], hotkeys: &HashMap<String, String>, plugin_slots: &HashMap<String, PluginStratagem>) {
+pub fn save_profile(
+    name: &str,
+    loadout: &[Option<usize>],
+    hotkeys: &HashMap<String, String>,
+    plugin_slots: &HashMap<String, PluginStratagem>,
+) {
     let profile = Profile {
         loadout: loadout.to_vec(),
         slot_hotkeys: hotkeys.clone(),
-        plugin_slots: plugin_slots.iter().map(|(k,v)| (k.clone(), v.clone())).collect(),
+        plugin_slots: plugin_slots
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     };
     let path = profiles_dir().join(format!("{name}.json"));
     let _ = util::save_json(&path, &profile);
