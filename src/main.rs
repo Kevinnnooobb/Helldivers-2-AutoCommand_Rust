@@ -2,17 +2,22 @@
 // Helldivers 2 Auto Stratagem Caller — Rust + egui
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_events;
+mod assets;
 mod compact_mode;
 mod config;
 mod executor;
 mod hotkey;
 mod icon_fetch;
 mod icons;
+mod image_rect;
+mod item;
 mod loadout_sync;
 mod main_view;
 mod model;
 mod overlay_win;
 mod plugin;
+mod preset;
 mod state;
 mod stratagems;
 mod theme;
