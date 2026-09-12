@@ -14,3 +14,16 @@ panic.log
 /.tmp_ov2
 /.tmp_matcher_backup.rs
 /old
+
+# ── 云端只保留源码与构建元数据 ──
+# 以下内容仅留在本地磁盘，不上传：资产（图标/字体/演示图）、实机测试夹具、
+# 数据集、计划与迁移文档。它们都能被代码引用（编译期 include_bytes!/rust-embed
+# 需要 assets/**，fixture 探针需要 src/fixtures/**），所以本地必须保留。
+/assets
+/dataset
+/docs
+/src/fixtures
+/plan6.md
+/plan7.md
+/reference-pins.json
+/CONTEXT.md
