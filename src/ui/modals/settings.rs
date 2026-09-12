@@ -230,10 +230,6 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                                         .range(0.35..=1.0),
                                 );
                                 ui.checkbox(
-                                    &mut app.settings_allow_overwrite,
-                                    egui::RichText::new("已有战备时允许覆盖").font(m.hud(11.0)),
-                                );
-                                ui.checkbox(
                                     &mut app.settings_debug_shots,
                                     egui::RichText::new("保存调试图").font(m.hud(11.0)),
                                 );
@@ -281,8 +277,6 @@ pub fn render_settings_modal(app: &mut H2ACApp, ctx: &Context, m: &UiMetrics) {
                                 crate::hotkey::normalize_hotkey(&app.settings_cancel_hotkey);
                             app.model.config.compact_mode.opacity =
                                 app.settings_compact_opacity.clamp(0.35, 1.0);
-                            app.model.config.loadout_sync.allow_overwrite_filled =
-                                app.settings_allow_overwrite;
                             app.model.config.loadout_sync.debug_screenshots =
                                 app.settings_debug_shots;
                             config::save_config(&app.model.config);

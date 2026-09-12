@@ -204,6 +204,7 @@ fn reference_pipeline_on_labeled_list_fixture() {
 }
 
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_pipeline_on_labeled_home_fixture() {
     let frame = load_frame("home_labeled_1914x1080.png");
     let runtime = RecognizerRuntime::load().expect("参考运行时");
@@ -237,6 +238,7 @@ fn reference_pipeline_on_labeled_home_fixture() {
 ///
 /// 输出写到 `target/fixture_debug/`（已被 .gitignore 覆盖，不进版本控制）。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn dump_reference_geometry_overlay() {
     use image::{Rgba, RgbaImage};
     fn outline(image: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: Rgba<u8>) {
@@ -414,6 +416,7 @@ fn reference_classifier_offset_sweep() {
 /// 槽位只有 78px（参考原生 104px）→ 字形笔画更细、更受抗锯齿影响。
 /// 本实验把 ROI 直接放大到参考原生尺寸，看分数是否回升。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_upscaled_roi_probe() {
     use crate::vision::{RoiObservation, Slot};
 
@@ -504,6 +507,7 @@ fn reference_upscaled_roi_probe() {
 /// 再交给参考分类器。若分数显著回升 → 根因是"捕获帧的光度口径"，
 /// 且修法是**标定**（而不是改几何/尺度）。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_background_calibration_probe() {
     use crate::vision::{RoiObservation, Slot};
 
@@ -600,6 +604,7 @@ fn reference_background_calibration_probe() {
 }
 
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_scale_probe_fast() {
     use crate::vision::{RoiObservation, Slot};
 
@@ -677,6 +682,7 @@ fn reference_scale_probe_fast() {
 /// （78px 槽位 → 51px 字形）。若实机字形在该帧里**明显更大/更小**，
 /// 模板会被渲染成错误尺寸，相似度就会整体塌到 0.3~0.6（实测正是如此）。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_glyph_scale_probe() {
     use image::Rgba;
 
@@ -804,6 +810,7 @@ fn reference_glyph_scale_probe() {
 /// * 多数格存在某个 `dy` 让**期望战备夺冠** → 失败是几何/对齐问题（网格没落在真实行上）；
 /// * 任何 `dy` 都无法让期望战备拿到合理分数 → 实机字形与模板口径不匹配（尺度/渲染差异）。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_per_cell_alignment_search() {
     use crate::vision::{RoiObservation, Slot};
 
@@ -896,6 +903,7 @@ fn reference_per_cell_alignment_search() {
 /// 再让参考分类器分类。若这一步都失败，说明问题在调用/机制层（例如尺寸口径），
 /// 而不是"实机内容不匹配"。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_classifier_self_test() {
     use crate::vision::{RoiObservation, Slot, SlotKind};
     use image::{Rgba, RgbaImage};
@@ -953,6 +961,7 @@ fn reference_classifier_self_test() {
 ///
 /// 诊断用：**逐格量字形中心相对检测框中心的偏移**（此前只扫过 y，从未扫 x）。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn reference_glyph_centering_probe() {
     let frame = load_frame("stratagem_list_labeled_1914x1080.png");
     let runtime = RecognizerRuntime::load().expect("参考运行时");
@@ -1019,6 +1028,7 @@ fn reference_glyph_centering_probe() {
 /// 直接回答一个视觉问题：**参考模板与游戏渲染的字形在形状/尺度/颜色上是否同一套**。
 /// 输出 `target/fixture_debug/compare_sheet.png`（左＝实机检测框，右＝参考模板）。
 #[test]
+#[ignore = "plan7 §13 诊断探针：默认不参与测试流程，需要时用 --ignored 显式运行"]
 fn dump_slot_vs_template_contact_sheet() {
     use image::{Rgba, RgbaImage};
 

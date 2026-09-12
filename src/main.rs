@@ -136,7 +136,6 @@ pub struct H2ACApp {
     /// 全局取消装配快捷键（属于 Loadout Sync，不属于紧凑模式）
     pub settings_cancel_hotkey: String,
     pub settings_compact_opacity: f32,
-    pub settings_allow_overwrite: bool,
     pub settings_debug_shots: bool,
     pub context: Option<ContextState>,
     pub library_context: Option<LibraryContext>,
@@ -237,7 +236,6 @@ impl H2ACApp {
             settings_cancel_hotkey: config::Config::default().loadout_sync_cancel_hotkey,
             settings_compact_opacity: crate::compact_mode::config::CompactModeConfig::default()
                 .opacity,
-            settings_allow_overwrite: false,
             settings_debug_shots: false,
             context: None,
             library_context: None,
@@ -306,7 +304,6 @@ impl H2ACApp {
         self.settings_compact_toggle = self.model.config.compact_mode.toggle_hotkey.clone();
         self.settings_cancel_hotkey = self.model.config.loadout_sync_cancel_hotkey.clone();
         self.settings_compact_opacity = self.model.config.compact_mode.opacity;
-        self.settings_allow_overwrite = self.model.config.loadout_sync.allow_overwrite_filled;
         self.settings_debug_shots = self.model.config.loadout_sync.debug_screenshots;
         self.show_settings = true;
     }
@@ -341,7 +338,11 @@ impl H2ACApp {
     }
 
     /// 由 config 构建 键名→动作 映射（非法槽位/键名被过滤）。
-    /// 监听开关热键始终生效；已静音时槽位热键不会进入映射。
+    ///
+    /// **静音语义（审阅意见修正）**：静音 = 停止一切"会驱动游戏"的热键，
+    /// 因此槽位热键与自动装配（装填）热键在静音时都**不进入映射**。
+    /// 始终生效的是三类不驱动游戏的键：监听开关（否则静音后无法用热键恢复监听）、
+    /// 取消装配（运行中取消是安全阀，静音也必须能停）、浮窗显隐。
     fn hotkey_action_map(
         config: &config::Config,
         listening: bool,
@@ -361,7 +362,6 @@ impl H2ACApp {
 
         // 插入顺序即优先级（后插入覆盖同键）：
         //   槽位 < 自动装配 < 取消 < 显示浮窗 < 监听开关
-        // 这些热键与监听开关一样，无论是否静音都生效（它们不注入战斗键盘序列）。
         let bind =
             |map: &mut HashMap<String, hotkey::HotkeyAction>, raw: &str, action: HotkeyAction| {
                 let key = hotkey::normalize_hotkey(raw);
@@ -369,16 +369,19 @@ impl H2ACApp {
                     map.insert(key, action);
                 }
             };
-        // ── 三个互相正交的全局动作（§1 / §17）──
-        //   AutoLoadout          ：任何模式下都可用；只管启动 Loadout Sync
-        //   CancelLoadoutSync    ：任何模式下都可用；只管停止 Loadout Sync
-        //   ToggleCompactOverlay ：唯一能改变浮窗可见性的动作（关闭紧凑模式时才不注册）
+        // ── 全局动作 ──
+        //   AutoLoadout          ：会驱动游戏（截图 + 鼠标），**静音时禁用**
+        //   CancelLoadoutSync    ：安全阀，任何情况下都可用
+        //   ToggleCompactOverlay ：只改浮窗可见性（关闭紧凑模式时才不注册）
+        //   ToggleListening      ：否则静音后无法用热键恢复监听
         // 注意：取消与自动装配都不依赖 compact_mode.enabled，也不依赖浮窗当前状态。
-        bind(
-            &mut map,
-            &config.loadout_sync_hotkey,
-            HotkeyAction::AutoLoadout,
-        );
+        if listening {
+            bind(
+                &mut map,
+                &config.loadout_sync_hotkey,
+                HotkeyAction::AutoLoadout,
+            );
+        }
         bind(
             &mut map,
             &config.loadout_sync_cancel_hotkey,

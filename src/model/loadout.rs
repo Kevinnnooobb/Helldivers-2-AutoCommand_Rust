@@ -60,7 +60,7 @@ impl H2ACApp {
         let job = SyncJob {
             selection,
             params: cfg.clone(),
-            debug_screenshots: cfg.debug_screenshots || cfg.debug_overlay || self.model.debug_mode,
+            debug_screenshots: cfg.debug_screenshots || self.model.debug_mode,
         };
         let started = self.model.loadout_sync.start(move |shared, tx| {
             controller::run(job, shared, tx);

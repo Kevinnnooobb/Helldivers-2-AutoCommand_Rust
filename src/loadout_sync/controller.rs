@@ -13,13 +13,15 @@
 //! 1. **S1 目标翻译**：把 H2AC 的 Slot06~10 目标翻成参考目录 `item_id`；
 //!    目录里没有的目标（例如任务战备）**整轮拒答**，绝不退化成"滚动到找到为止"。
 //! 2. **S3 事件桥**：把参考 `AppEvent` 桥到 H2AC 的日志与进度。
-//! 3. **取消与结论**：在阶段边界检查取消标志，并把结果翻成 `SyncStatus`。
+//! 3. **取消与结论**：取消标志交给参考 `AutomationSession::with_cancel`
+//!    （每次捕获/输入前检查一次，故取消在一步之内生效），并把参考的 anyhow 错误
+//!    按阶段归类回 H2AC 的具体错误类型。
 //!
 //! 输入释放由参考 `InputSession` 的 `Drop` 保证（异常、取消、权限失败都会走到）。
 
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, atomic::Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::app_events::{AppEvent, AppEventSink};
@@ -170,23 +172,17 @@ fn run_inner(
         }
     };
 
-    // ── 捕获会话 + 标定 ROI + 自动化会话（全部参考原文）──
+    // ── 捕获会话 + 标定 ROI + 自动化会话（全部参考原文，仅追加取消钩子）──
     reporter.stage("Capture", 0, "");
     let mut capture_session = CaptureSessionManager::new();
     let capture = capture_session
         .get_or_create(&window)
-        .map_err(|error| LoadoutSyncError::CaptureFailed {
-            detail: format!("{error:#}"),
-        })?;
-    let region = bind_loadout_region(capture, runtime.calibration()).map_err(|error| {
-        LoadoutSyncError::CaptureFailed {
-            detail: format!("标定 ROI 解析失败: {error:#}"),
-        }
-    })?;
+        .map_err(|error| classify_reference_error("Capture", &error))?;
+    let region = bind_loadout_region(capture, runtime.calibration())
+        .map_err(|error| classify_reference_error("Capture", &error))?;
     let mut automation =
-        AutomationSession::new(region, window).map_err(|error| LoadoutSyncError::InputError {
-            detail: format!("{error:#}"),
-        })?;
+        AutomationSession::with_cancel(region, window, Some(shared.cancel_handle()))
+            .map_err(|error| classify_reference_error("Input", &error))?;
 
     // ── 界面状态：Home 三态由参考 detect_ui_state 判定 ──
     reporter.stage("Scanning", 1, "");
@@ -194,98 +190,228 @@ fn run_inner(
         Ok(observation) => observation,
         Err(error) => {
             reporter.warn(format!("配装 Home 扫描失败: {error:#}"));
-            return Err(LoadoutSyncError::LoadoutHomeNotDetected { score: 0.0 });
+            return Err(classify_reference_error("Scanning", &error));
         }
     };
     let ui_state = detect_ui_state(&initial);
     reporter.info(format!("界面状态: {}", ui_state.label()));
     reporter.detail(format!("界面: {}", ui_state.label()));
-    if shared.is_cancelled() {
-        return Err(LoadoutSyncError::Cancelled);
+    if let Err(error) = check_cancel(shared) {
+        return Err(error);
     }
 
     // ── S3：参考事件 → H2AC 日志/进度 ──
-    let events = {
-        let reporter = reporter.clone();
-        AppEventSink::new(move |event: AppEvent| match event {
-            AppEvent::ListSelectionStarted {
-                item_kind,
-                requested_items,
-            } => reporter.info(format!("开始选择 {} ×{requested_items}", item_kind.label())),
-            AppEvent::ItemSelected { item_id } => {
-                reporter.info(format!("已确认选中: {item_id}"));
-            }
-            AppEvent::UiStateDetected { state } => {
-                reporter.detail(format!("界面: {state}"));
-            }
-            AppEvent::PresetDone { preset, warning } => {
-                if let Some(warning) = warning {
-                    reporter.warn(format!("{preset}: {warning}"));
-                }
-            }
-            other => reporter.detail(format!("{other:?}")),
-        })
-    };
+    let events = event_sink(reporter);
 
+    // ── 装配主体（单独成函数：失败时仍能拿到 automation 抓一帧调试图）──
+    let outcome = assemble(
+        &runtime,
+        &mut automation,
+        &events,
+        reporter,
+        ui_state,
+        &stratagems,
+        booster.as_deref(),
+        shared,
+    );
+
+    if job.debug_screenshots {
+        save_debug_frame(&mut automation, reporter, outcome.is_ok());
+    }
+
+    outcome
+}
+
+/// 按参考 `detect_ui_state` 的结果决定动作。本版本只做**装配**（不实现参考的保存路径）。
+#[allow(clippy::too_many_arguments)]
+fn assemble(
+    runtime: &RecognizerRuntime,
+    automation: &mut AutomationSession<'_>,
+    events: &AppEventSink,
+    reporter: &Reporter,
+    ui_state: UiState,
+    stratagems: &[String],
+    booster: Option<&str>,
+    shared: &LoadoutSyncShared,
+) -> Result<(), LoadoutSyncError> {
     match ui_state {
         UiState::HomeEmpty => {
             reporter.stage("Stratagems", 1, "");
-            apply_empty_loadout_preset(&runtime, &mut automation, &events, &stratagems, true)
-                .map_err(|error| LoadoutSyncError::UnexpectedState {
-                    detail: format!("装配战备失败: {error:#}"),
-                })?;
-            if shared.is_cancelled() {
-                return Err(LoadoutSyncError::Cancelled);
-            }
+            apply_empty_loadout_preset(runtime, automation, events, stratagems, true)
+                .map_err(|error| classify_reference_error("Stratagems", &error))?;
+            check_cancel(shared)?;
 
-            if let Some(booster) = booster.as_ref() {
+            if let Some(booster) = booster {
                 reporter.stage("Booster", 5, "");
-                apply_booster_from_home(
-                    &runtime,
-                    &mut automation,
-                    &events,
-                    std::slice::from_ref(booster),
-                )
-                .map_err(|error| LoadoutSyncError::UnexpectedState {
-                    detail: format!("装配 Booster 失败: {error:#}"),
-                })?;
+                apply_booster_from_home(runtime, automation, events, std::slice::from_ref(&booster.to_string()))
+                    .map_err(|error| classify_reference_error("Booster", &error))?;
             }
+            Ok(())
         }
         UiState::HomeFilled => {
-            // D2：本次只做装配，不实现参考的"保存预设"路径。
+            // 只做装配：参考的 HomeFilled 分支是"保存预设"，本版本不实现。
             reporter.warn("配装界面已填满：请先清空四个战备槽再自动装配");
-            return Err(LoadoutSyncError::LoadoutNotEmpty { filled: 4 });
+            Err(LoadoutSyncError::LoadoutNotEmpty { filled: 4 })
         }
         UiState::HomeMixed => {
             reporter.warn("配装界面部分填充：拒绝装配，避免误点到错误目标");
-            return Err(LoadoutSyncError::UnexpectedState {
+            Err(LoadoutSyncError::UnexpectedState {
                 detail: "配装界面部分填充（HomeMixed），已按安全策略拒绝".into(),
-            });
+            })
         }
         UiState::List(_) | UiState::Unknown => {
             reporter.warn("未检测到配装 Home 界面（可能停在列表或其它界面）");
-            return Err(LoadoutSyncError::LoadoutHomeNotDetected { score: 0.0 });
+            Err(LoadoutSyncError::LoadoutHomeNotDetected { score: 0.0 })
         }
     }
-
-    if shared.is_cancelled() {
-        return Err(LoadoutSyncError::Cancelled);
-    }
-
-    if job.debug_screenshots {
-        save_debug_frame(&mut automation, reporter);
-    }
-
-    if job.params.debug_overlay {
-        reporter.warn("debug_overlay 已随旧视觉管线移除（参考栈不提供叠加图）");
-    }
-    Ok(())
 }
 
-/// 调试帧落盘（H2AC 侧能力；参考栈不落盘，这里在阶段末补抓一帧）。
-fn save_debug_frame(automation: &mut AutomationSession<'_>, reporter: &Reporter) {
+/// 参考 `AppEvent` → H2AC 日志/进度。
+fn event_sink(reporter: &Reporter) -> AppEventSink {
+    let reporter = reporter.clone();
+    AppEventSink::new(move |event: AppEvent| match event {
+        AppEvent::ListSelectionStarted {
+            item_kind,
+            requested_items,
+        } => reporter.info(format!("开始选择 {} ×{requested_items}", item_kind.label())),
+        AppEvent::ItemSelected { item_id } => {
+            reporter.info(format!("已确认选中: {item_id}"));
+        }
+        AppEvent::UiStateDetected { state } => {
+            reporter.detail(format!("界面: {state}"));
+        }
+        AppEvent::PresetDone { preset, warning } => {
+            if let Some(warning) = warning {
+                reporter.warn(format!("{preset}: {warning}"));
+            }
+        }
+        other => reporter.detail(format!("{other:?}")),
+    })
+}
+
+/// 阶段边界的取消检查（细粒度取消由 `AutomationSession` 的取消钩子承担）。
+fn check_cancel(shared: &LoadoutSyncShared) -> Result<(), LoadoutSyncError> {
+    if shared.is_cancelled() {
+        Err(LoadoutSyncError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// 把参考实现的 anyhow 错误按**阶段 + 消息链**归类回 H2AC 的具体错误类型。
+///
+/// 审阅意见：此前所有失败都塌成 `UnexpectedState`，权限 / 输入 / 超时等类型全部丢失。
+/// 这里沿 `error.chain()` 逐层匹配关键字：命中具体类型就返回具体类型，
+/// 都不命中才退回 `UnexpectedState`（并保留完整消息链，日志里不会丢信息）。
+fn classify_reference_error(stage: &'static str, error: &anyhow::Error) -> LoadoutSyncError {
+    let detail = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(" → ");
+    let top = error.to_string();
+    let lower = detail.to_ascii_lowercase();
+
+    if lower.contains("automation cancelled") {
+        return LoadoutSyncError::Cancelled;
+    }
+    if lower.contains("no foreground window") {
+        return LoadoutSyncError::GameNotFound;
+    }
+    if lower.contains("not the foreground")
+        || lower.contains("lost focus")
+        || lower.contains("moved or resized")
+        || lower.contains("identity changed")
+        || lower.contains("no longer available")
+        || lower.contains("is not the foreground window")
+    {
+        return LoadoutSyncError::GameWindowInvalid { detail };
+    }
+    if lower.contains("access is denied")
+        || lower.contains("permission")
+        || lower.contains("unauthorized")
+        || lower.contains("elevation")
+    {
+        return LoadoutSyncError::PermissionError;
+    }
+    if lower.contains("capture")
+        || lower.contains("dwm")
+        || lower.contains("roi")
+        || lower.contains("client rect")
+        || lower.contains("client origin")
+        || lower.contains("empty roi")
+        || lower.contains("create capture session")
+    {
+        return LoadoutSyncError::CaptureFailed { detail };
+    }
+    if lower.contains("sendinput")
+        || lower.contains("input")
+        || lower.contains("cursor")
+        || lower.contains("click")
+        || lower.contains("wheel")
+        || lower.contains("keyboard")
+        || lower.contains("hotkey")
+    {
+        return LoadoutSyncError::InputError { detail };
+    }
+    if lower.contains("timeout") || lower.contains("timed out") {
+        return LoadoutSyncError::Timeout {
+            stage,
+            ms: first_number(&lower).unwrap_or(0),
+        };
+    }
+    if lower.contains("viewport")
+        || lower.contains("shared landmark")
+        || lower.contains("page turn")
+        || lower.contains("wheel inputs")
+    {
+        return LoadoutSyncError::ViewportNavigationFailed { detail };
+    }
+    if lower.contains("did not stabilize") || lower.contains("hover") {
+        return LoadoutSyncError::HoverVerificationFailed {
+            name: top,
+            score: 0.0,
+        };
+    }
+    if lower.contains("neither moved nor dimmed")
+        || lower.contains("remained unchanged")
+        || lower.contains("did not return to a confirmed loadout home")
+        || lower.contains("could not be tracked")
+    {
+        return LoadoutSyncError::SelectionVerificationFailed { name: top };
+    }
+    if lower.contains("not found") {
+        return LoadoutSyncError::TargetNotFound { name: top };
+    }
+    if lower.contains("not recognized") || lower.contains("could not be recognized") {
+        return LoadoutSyncError::RecognitionUnsupported {
+            name: top,
+            score: 0.0,
+        };
+    }
+    LoadoutSyncError::UnexpectedState {
+        detail: format!("{stage}: {detail}"),
+    }
+}
+
+/// 取消息里第一个整数（参考的超时消息形如 "timed out after 4000 ms"）。
+fn first_number(text: &str) -> Option<u64> {
+    let digits: String = text
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// 调试帧落盘（H2AC 侧能力；参考栈不落盘）。
+///
+/// 成功与失败都会尝试抓一帧，文件名带状态后缀 —— 与 `config.rs` 的说明一致。
+/// 取消路径下不落盘：取消钩子在捕获前生效，避免取消后还去抓帧。
+fn save_debug_frame(automation: &mut AutomationSession<'_>, reporter: &Reporter, succeeded: bool) {
+    let label = if succeeded { "ok" } else { "failed" };
     let Ok(image) = automation.capture() else {
-        reporter.warn("调试帧抓取失败");
+        reporter.warn(format!("调试帧抓取失败（{label}）"));
         return;
     };
     let dir = crate::util::app_dir().join("loadout_sync_debug");
@@ -297,14 +423,14 @@ fn save_debug_frame(automation: &mut AutomationSession<'_>, reporter: &Reporter)
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
         .unwrap_or(0);
-    let path = dir.join(format!("loadout_sync_{stamp}.png"));
+    let path = dir.join(format!("loadout_sync_{label}_{stamp}.png"));
     match image.save(&path) {
         Ok(()) => reporter.info(format!("调试帧: {}", path.display())),
         Err(error) => reporter.warn(format!("调试帧保存失败: {error}")),
     }
 }
 
-/// 取消标志的只读检查（供将来放进参考循环边界的接缝使用）。
+/// 取消标志的只读检查（保留给未来的参考循环边界接缝；当前由 automation 钩子承担）。
 #[allow(dead_code)]
 fn cancelled(shared: &LoadoutSyncShared) -> bool {
     shared.is_cancelled() && shared.cancel_handle().load(Ordering::SeqCst)
