@@ -10,6 +10,11 @@
 // `controller` 只负责窗口、取消、日志、生命周期；`matcher` / `recognizer` /
 // `viewport` / `list_map` / `verifier` / `types` 是它的**底层观察适配**，
 // 不允许在状态机之外发送装配输入。
+//
+// edition 2024：本模块内的 Win32/DXGI 互操作（wgc / window）仍是 2021 时代的写法，
+// 其 `unsafe fn` 体内没有逐条 `unsafe` 块。这些文件将在 plan7 Step 9 被参考实现
+// 原文取代并整体归档，故此处只做模块级豁免，不为即将删除的代码做逐点改写。
+#![allow(unsafe_op_in_unsafe_fn)]
 pub mod capture;
 pub mod config;
 pub mod controller;

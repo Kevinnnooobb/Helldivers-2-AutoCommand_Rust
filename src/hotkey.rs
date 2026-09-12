@@ -386,18 +386,21 @@ unsafe extern "system" fn hook_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    if code >= 0 {
-        let kbd = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        let vk = kbd.vkCode;
-        let msg = wparam.0;
-        // 回调运行在系统挂钩线程里：panic 绝不能逃逸出去 ——
-        // 一旦逃逸，钩子线程会死掉，系统会静默摘除 WH_KEYBOARD_LL 钩子，
-        // 表现为「所有全局热键突然全部失效，且没有任何报错」。
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_key_event(msg, vk);
-        }));
+    // edition 2024：`unsafe fn` 体内的不安全操作必须显式包在 `unsafe` 块里
+    unsafe {
+        if code >= 0 {
+            let kbd = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            let vk = kbd.vkCode;
+            let msg = wparam.0;
+            // 回调运行在系统挂钩线程里：panic 绝不能逃逸出去 ——
+            // 一旦逃逸，钩子线程会死掉，系统会静默摘除 WH_KEYBOARD_LL 钩子，
+            // 表现为「所有全局热键突然全部失效，且没有任何报错」。
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle_key_event(msg, vk);
+            }));
+        }
+        CallNextHookEx(None, code, wparam, lparam)
     }
-    CallNextHookEx(None, code, wparam, lparam)
 }
 
 /// 键盘事件的匹配逻辑（与 FFI 外壳分离，便于 catch_unwind 包裹与后续测试）。
