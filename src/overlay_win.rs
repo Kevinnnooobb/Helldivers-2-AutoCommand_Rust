@@ -65,22 +65,22 @@ struct FindCtx {
 unsafe extern "system" fn enum_proc(
     hwnd: HWND,
     lparam: LPARAM,
-) -> windows::Win32::Foundation::BOOL {
+) -> windows::core::BOOL {
     // edition 2024：`unsafe fn` 体内的不安全操作必须显式包在 `unsafe` 块里
     unsafe {
         let ctx = &mut *(lparam.0 as *mut FindCtx);
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid != ctx.pid || !IsWindowVisible(hwnd).as_bool() {
-            return windows::Win32::Foundation::BOOL::from(true);
+            return windows::core::BOOL::from(true);
         }
         let mut rect = RECT::default();
         if GetClientRect(hwnd, &mut rect).is_err() {
-            return windows::Win32::Foundation::BOOL::from(true);
+            return windows::core::BOOL::from(true);
         }
         let area = ((rect.right - rect.left) as i64) * ((rect.bottom - rect.top) as i64);
         if area <= 0 {
-            return windows::Win32::Foundation::BOOL::from(true);
+            return windows::core::BOOL::from(true);
         }
         // 优先取带 H2AC-RS 标题的窗口，其余按面积最大者兜底
         let titled = window_title(hwnd)
@@ -94,7 +94,7 @@ unsafe extern "system" fn enum_proc(
             ctx.best = Some(hwnd);
             ctx.best_area = area;
         }
-        windows::Win32::Foundation::BOOL::from(true)
+        windows::core::BOOL::from(true)
     }
 }
 
@@ -203,7 +203,7 @@ pub fn set_topmost(hwnd: HWND, on: bool) -> bool {
     let ok = unsafe {
         SetWindowPos(
             hwnd,
-            insert_after,
+            Some(insert_after),
             0,
             0,
             0,
@@ -227,7 +227,7 @@ pub fn move_to(hwnd: HWND, x: i32, y: i32) -> bool {
         // （置顶由 set_topmost 用 HWND_TOPMOST 单独完成）
         SetWindowPos(
             hwnd,
-            HWND_TOPMOST,
+            Some(HWND_TOPMOST),
             x,
             y,
             0,

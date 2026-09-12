@@ -4,7 +4,6 @@
 use crate::loadout_sync::controller::{self, SyncJob};
 use crate::loadout_sync::selection::LoadoutSyncSelection;
 use crate::loadout_sync::state::{SyncEvent, SyncLogLevel};
-use crate::loadout_sync::types::Calibration;
 use crate::H2ACApp;
 use crate::LogKind;
 
@@ -56,18 +55,15 @@ impl H2ACApp {
             );
             return false;
         }
-        // 每次任务开始都重建截图会话：分辨率/显示模式/窗口切换后必须重新绑定
-        crate::loadout_sync::wgc::invalidate();
+        // 捕获会话由参考 `CaptureSessionManager` 每次任务内新建（分辨率/显示模式切换后自然重建）
         let cfg = self.model.config.loadout_sync.clone().sanitize();
         let job = SyncJob {
             selection,
             params: cfg.clone(),
-            calibration: Calibration::default(),
             debug_screenshots: cfg.debug_screenshots || cfg.debug_overlay || self.model.debug_mode,
         };
         let started = self.model.loadout_sync.start(move |shared, tx| {
-            let mut env = controller::RealEnv::new(job.debug_screenshots, cfg.debug_overlay);
-            controller::run(&mut env, job, shared, tx);
+            controller::run(job, shared, tx);
         });
         if started {
             self.log(LogKind::Info, "[LoadoutSync] Triggered — 自动装配开始");

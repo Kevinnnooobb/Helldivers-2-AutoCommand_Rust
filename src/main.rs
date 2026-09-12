@@ -4,14 +4,19 @@
 
 mod app_events;
 mod assets;
+mod automation;
+mod capture;
 mod compact_mode;
 mod config;
 mod executor;
+mod game_window;
 mod hotkey;
 mod icon_fetch;
 mod icons;
 mod image_rect;
+mod input;
 mod item;
+mod loadout;
 mod loadout_sync;
 mod main_view;
 mod model;
@@ -26,6 +31,7 @@ mod util;
 mod vision;
 mod widgets;
 mod wiki_fetcher;
+mod window;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;

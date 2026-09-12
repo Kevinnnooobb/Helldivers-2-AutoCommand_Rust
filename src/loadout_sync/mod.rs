@@ -6,50 +6,24 @@
 //   * 只使用「截图识别 + 正常鼠标输入」，等价于用户手动操作；
 //   * 与 executor.rs（战备指令键盘注入）完全独立，上排 Slot 01~05 不受影响。
 //
-// 动作权威（plan6 §5.3）：整轮装配只有一条动作路径 —— `direct_select`。
-// `controller` 只负责窗口、取消、日志、生命周期；`matcher` / `recognizer` /
-// `viewport` / `list_map` / `verifier` / `types` 是它的**底层观察适配**，
-// 不允许在状态机之外发送装配输入。
+// 动作权威（plan7）：整轮装配**完全由参考实现原文承担** ——
+//   `loadout::apply_empty_loadout_preset` / `loadout::apply_booster_from_home`
+//   （`src/loadout/direct_select.rs`），
+//   捕获与输入来自参考 `src/capture/*` + `src/input/windows.rs`，
+//   识别来自参考 `src/vision/*`，标定来自内嵌 `data/calibration.json`。
 //
-// edition 2024：本模块内的 Win32/DXGI 互操作（wgc / window）仍是 2021 时代的写法，
-// 其 `unsafe fn` 体内没有逐条 `unsafe` 块。这些文件将在 plan7 Step 9 被参考实现
-// 原文取代并整体归档，故此处只做模块级豁免，不为即将删除的代码做逐点改写。
-#![allow(unsafe_op_in_unsafe_fn)]
-pub mod capture;
-/// S1 适配层：H2AC 图标键 ↔ 参考目录 `item_id`（参考实现没有这一层）。
+// 本模块只保留 H2AC 侧的三样东西，不含任何识别/导航/点击判定：
+//   * `catalog_bridge` —— S1：H2AC 图标键 ↔ 参考目录 `item_id`（解析不出即整轮拒答）；
+//   * `controller`     —— S3：任务生命周期、日志上报、取消检查、调试帧；
+//   * `selection` / `state` / `error` / `config` —— H2AC 的输入模型与共享状态。
+//
+// edition 2024：本模块不再包含 Win32/DXGI 互操作（已由参考 capture/input 承担）。
 pub mod catalog_bridge;
 pub mod config;
 pub mod controller;
-/// 参考实现（`hd2-preset-helper-0.1.4`）的确定性装配状态机迁移层。
-/// 迁移状态与差距见 `docs/reference-migration.md`。
-pub mod direct_select;
 pub mod error;
-pub mod input;
-/// 旧滚动位移适配（生产路径已由 `direct_select::page_relation` 承担；
-/// 保留为底层适配契约的回归测试对象）。
-pub mod list_map;
-/// 图标模板匹配：`direct_select::classify` 的底层观察适配。
-pub mod matcher;
-/// 逐帧几何与界面识别：`direct_select::real_io` 的底层观察适配。
-pub mod recognizer;
-/// 参考实现视觉层的类型与常量（`ItemKind` / `SlotKind` / `Classification` /
-/// `RoiObservation` / `UiState`）。迁移映射见 `docs/reference-migration.md`。
-pub mod reference_vision;
+/// plan7 Step 6 的真实帧对照探针（仅测试构建，非生产路径）。
+#[cfg(test)]
+mod fixture_compare;
 pub mod selection;
 pub mod state;
-pub mod types;
-/// 槽位验证的底层适配契约（保留 `verify_slot_selected`）。
-pub mod verifier;
-/// Viewport 亮度签名（生产路径已由 `direct_select::page_relation` 承担；
-/// 保留为底层适配契约的回归测试对象）。
-pub mod viewport;
-pub mod wgc;
-pub mod window;
-
-#[cfg(test)]
-mod tests;
-/// 合成帧构造入口 —— 供 test-only 的底层 spike 复用同一份帧构造。
-#[cfg(test)]
-pub(crate) mod fixture_support {
-    pub(crate) use super::tests::make_frame;
-}

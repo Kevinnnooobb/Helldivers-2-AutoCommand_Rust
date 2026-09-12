@@ -1,591 +1,311 @@
-// Loadout Sync 控制器 —— 显式状态机 + 工作线程执行。
-//
-// 为什么是状态机而不是一个巨大的 apply_loadout()：
-//   * 每一步都有独立的超时、重试上限与失败错误类型；
-//   * 每一步都能被取消（取消检查贯穿所有循环）；
-//   * 视觉不成立时立即停止，绝不「随机继续点」。
-//
-// 状态机只依赖 SyncEnv（窗口/截图/输入/时钟），因此可以在单元测试里用
-// mock 环境跑完整个流程，不需要真实游戏。
-//
-// 动作权威（plan6 §5.3）：
-//   * 整轮装配**只有**一条动作路径 —— [`SyncState::DirectSelecting`] 交给
-//     `direct_select` 会话；
-//   * 本文件不再包含模板评分、滚动位移推导、hover 阈值或点击后图标再识别；
-//   * controller 只负责窗口、取消、日志、生命周期与失败诊断。
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+//! controller —— H2AC 侧的任务生命周期（plan7）。
+//!
+//! ## 动作权威
+//!
+//! 整轮装配**完全**由参考实现原文执行：
+//! `loadout::apply_empty_loadout_preset` / `loadout::apply_booster_from_home`
+//! （`src/loadout/direct_select.rs`），捕获与输入来自参考
+//! `capture::CaptureSessionManager` + `automation::AutomationSession`，
+//! 识别来自参考 `vision::RecognizerRuntime`。
+//!
+//! 本文件**不含**任何识别、导航、悬停或点击判定，只做三件 H2AC 特有的事：
+//!
+//! 1. **S1 目标翻译**：把 H2AC 的 Slot06~10 目标翻成参考目录 `item_id`；
+//!    目录里没有的目标（例如任务战备）**整轮拒答**，绝不退化成"滚动到找到为止"。
+//! 2. **S3 事件桥**：把参考 `AppEvent` 桥到 H2AC 的日志与进度。
+//! 3. **取消与结论**：在阶段边界检查取消标志，并把结果翻成 `SyncStatus`。
+//!
+//! 输入释放由参考 `InputSession` 的 `Drop` 保证（异常、取消、权限失败都会走到）。
 
-use crate::loadout_sync::capture::CapturedFrame;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use crate::app_events::{AppEvent, AppEventSink};
+use crate::automation::AutomationSession;
+use crate::capture::CaptureSessionManager;
+use crate::game_window::find_game_window;
+use crate::loadout::{
+    UiState, apply_booster_from_home, apply_empty_loadout_preset, bind_loadout_region,
+    detect_ui_state, scan_loadout_home,
+};
+use crate::loadout_sync::catalog_bridge;
 use crate::loadout_sync::config::LoadoutSyncConfig;
-use crate::loadout_sync::direct_select::classify::CatalogClassifier;
-use crate::loadout_sync::direct_select::real_io::RealDirectSelectIo;
-use crate::loadout_sync::direct_select::session::{self, SessionPlan};
 use crate::loadout_sync::error::LoadoutSyncError;
-use crate::loadout_sync::input::SyncInput;
 use crate::loadout_sync::selection::LoadoutSyncSelection;
 use crate::loadout_sync::state::{
-    log_line, status_from_error, LoadoutSyncShared, SyncEvent, SyncLogLevel, SyncStatus,
+    LoadoutSyncShared, SyncEvent, SyncLogLevel, SyncStatus, log_line, status_from_error,
 };
-use crate::loadout_sync::types::{Calibration, GameWindowInfo};
-use crate::assets::IconCatalog;
+use crate::vision::RecognizerRuntime;
 
-// ─── 状态 ───
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyncState {
-    Idle,
-    Preparing,
-    ValidatingSelection,
-    FindingGameWindow,
-    /// 整轮装配交给 plan6 的 `direct_select` 会话（唯一动作路径）。
-    DirectSelecting,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl SyncState {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Idle => "Idle",
-            Self::Preparing => "Preparing",
-            Self::ValidatingSelection => "ValidatingSelection",
-            Self::FindingGameWindow => "FindingGameWindow",
-            Self::DirectSelecting => "DirectSelecting",
-            Self::Completed => "Completed",
-            Self::Failed => "Failed",
-            Self::Cancelled => "Cancelled",
-        }
-    }
-
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
-    }
-}
-
-// ─── 环境抽象（真实实现 / 测试 mock） ───
-
-pub trait SyncEnv {
-    /// 找到游戏窗口
-    fn find_window(&mut self) -> Result<GameWindowInfo, LoadoutSyncError>;
-    /// 游戏窗口是否处于前台（绝不主动抢焦点，因此必须由环境回答）
-    fn window_is_foreground(&mut self, win: &GameWindowInfo) -> bool;
-    fn capture(
-        &mut self,
-        win: &GameWindowInfo,
-        want_color: bool,
-    ) -> Result<CapturedFrame, LoadoutSyncError>;
-    fn input(&mut self) -> &mut dyn SyncInput;
-    fn now_ms(&mut self) -> u64;
-    /// 环境自带的等待原语（direct_select 使用自己的轮询节奏，此处留给测试/调试实现）
-    #[allow(dead_code)]
-    fn sleep_ms(&mut self, ms: u64);
-    /// 保存调试截图（debug 关闭时为空实现）
-    fn save_debug(&mut self, name: &str, frame: &CapturedFrame, note: &str);
-}
-
-// ─── 报告器（状态 + 日志） ───
-
-pub struct Reporter {
-    shared: Arc<LoadoutSyncShared>,
-    tx: std::sync::mpsc::Sender<SyncEvent>,
-}
-
-impl Reporter {
-    pub fn new(shared: Arc<LoadoutSyncShared>, tx: std::sync::mpsc::Sender<SyncEvent>) -> Self {
-        Self { shared, tx }
-    }
-
-    pub fn log(&self, level: SyncLogLevel, msg: impl AsRef<str>) {
-        let _ = self.tx.send(SyncEvent::Log(level, log_line(msg.as_ref())));
-    }
-
-    pub fn info(&self, msg: impl AsRef<str>) {
-        self.log(SyncLogLevel::Info, msg);
-    }
-
-    pub fn warn(&self, msg: impl AsRef<str>) {
-        self.log(SyncLogLevel::Warn, msg);
-    }
-
-    pub fn error(&self, msg: impl AsRef<str>) {
-        self.log(SyncLogLevel::Error, msg);
-    }
-
-    pub fn stage(&self, state: SyncState, step: usize, target: impl Into<String>) {
-        self.shared.set_stage(state.name(), step, target);
-    }
-
-    pub fn detail(&self, msg: impl Into<String>) {
-        self.shared.set_detail(msg);
-    }
-
-    pub fn cancelled(&self) -> bool {
-        self.shared.is_cancelled()
-    }
-
-    /// 取消标志的独立句柄（供 `direct_select` 的 IO 在自己的循环里检查取消）。
-    ///
-    /// 返回 `Arc` 而不是借用：调用方通常在持有 `&mut self` 的同时把它交给
-    /// 一个持有 `&mut dyn SyncEnv` 的 IO，借用 self 字段会与后续字段写入冲突。
-    pub fn cancel_check_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        self.shared.cancel_handle()
-    }
-
-    pub fn cancel_check(&self) -> Result<(), LoadoutSyncError> {
-        if self.cancelled() {
-            Err(LoadoutSyncError::Cancelled)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-// ─── 任务描述 ───
-
-#[derive(Debug, Clone)]
+/// 一次装配任务的输入（H2AC 侧）。
 pub struct SyncJob {
     pub selection: LoadoutSyncSelection,
     pub params: LoadoutSyncConfig,
-    pub calibration: Calibration,
     pub debug_screenshots: bool,
 }
 
-// ─── 状态机 ───
-
-pub struct Machine {
-    job: SyncJob,
-    reporter: Reporter,
-    state: SyncState,
-    window: Option<GameWindowInfo>,
-    frame: Option<CapturedFrame>,
-    /// 阶段超时（毫秒，基于 SyncEnv 时钟：测试里可虚拟推进，不依赖真实等待）
-    stage_deadline_ms: u64,
-    stage_timeout_ms: u64,
-    deadline_armed: bool,
-    started_ms: Option<u64>,
-    /// 审计轨迹（测试断言 + 调试日志）
-    pub transitions: Vec<SyncState>,
-}
-
-const POLL_MS: u64 = 80;
-
-impl Machine {
-    pub fn new(job: SyncJob, reporter: Reporter) -> Self {
-        Self {
-            job,
-            reporter,
-            state: SyncState::Idle,
-            window: None,
-            frame: None,
-            stage_deadline_ms: 0,
-            stage_timeout_ms: 0,
-            deadline_armed: false,
-            started_ms: None,
-            transitions: Vec::new(),
-        }
-    }
-
-    pub fn state(&self) -> SyncState {
-        self.state
-    }
-
-    fn goto(&mut self, state: SyncState) {
-        #[cfg(test)]
-        eprintln!("[state] -> {}", state.name());
-        self.transitions.push(state);
-        self.state = state;
-        self.stage_timeout_ms = self.stage_timeout(state).as_millis() as u64;
-        // 真正的时间戳在下一步 advance() 里用 SyncEnv 时钟打点
-        self.deadline_armed = false;
-    }
-
-    fn stage_timeout(&self, state: SyncState) -> Duration {
-        let p = &self.job.params;
-        let ms = match state {
-            SyncState::FindingGameWindow => 1_000,
-            // direct_select 会话在**一次** `advance` 里跑完整轮装配，
-            // 因此它的阶段预算就是整轮预算，不能按单步的 2s 计算。
-            SyncState::DirectSelecting => p.total_timeout_ms,
-            _ => 2_000,
-        };
-        Duration::from_millis(ms)
-    }
-
-    // ─── 主推进 ───
-
-    pub fn advance(&mut self, env: &mut dyn SyncEnv) -> Result<(), LoadoutSyncError> {
-        self.reporter.cancel_check()?;
-        let now = env.now_ms();
-        if !self.deadline_armed {
-            self.stage_deadline_ms = now + self.stage_timeout_ms;
-            self.deadline_armed = true;
-        }
-        let started = *self.started_ms.get_or_insert(now);
-        if now.saturating_sub(started) > self.job.params.total_timeout_ms {
-            return Err(LoadoutSyncError::Timeout {
-                stage: "Total",
-                ms: self.job.params.total_timeout_ms,
-            });
-        }
-        if now > self.stage_deadline_ms
-            && !matches!(
-                self.state,
-                SyncState::Idle | SyncState::Completed | SyncState::Failed | SyncState::Cancelled
-            )
-        {
-            return Err(LoadoutSyncError::Timeout {
-                stage: self.state.name(),
-                ms: self.stage_timeout_ms,
-            });
-        }
-
-        match self.state {
-            SyncState::Idle => self.step_preparing(env),
-            SyncState::Preparing => self.step_preparing(env),
-            SyncState::ValidatingSelection => self.step_validating(),
-            SyncState::FindingGameWindow => self.step_finding_window(env),
-            SyncState::DirectSelecting => self.step_direct_select(env),
-            SyncState::Completed | SyncState::Failed | SyncState::Cancelled => Ok(()),
-        }
-    }
-
-    // ─── 各状态实现 ───
-
-    fn step_preparing(&mut self, _env: &mut dyn SyncEnv) -> Result<(), LoadoutSyncError> {
-        self.reporter.info("Triggered — 开始自动装配");
-        let p = &self.job.params;
-        self.reporter.detail(format!(
-            "scroll={} probe={} threshold={:.2} max_scroll={} max_retry={}",
-            p.scroll_delta,
-            p.scroll_probe_delta,
-            p.recognition_threshold,
-            p.max_scroll_attempts,
-            p.max_retry_attempts
-        ));
-        if self.job.debug_screenshots {
-            self.reporter
-                .info("调试模式：失败时会保存截图到 screenshots/loadout_sync/");
-        }
-        self.goto(SyncState::ValidatingSelection);
-        Ok(())
-    }
-
-    fn step_validating(&mut self) -> Result<(), LoadoutSyncError> {
-        self.reporter.stage(SyncState::ValidatingSelection, 0, "");
-        self.reporter.info("读取 H2AC Slot 06~10");
-        for (i, item) in self.job.selection.stratagems.iter().enumerate() {
-            match item {
-                Some(item) => self.reporter.info(format!("S{}: {}", i + 1, item.name)),
-                None => self.reporter.info(format!("S{}: (未配置)", i + 1)),
-            }
-        }
-        match &self.job.selection.booster {
-            Some(b) => self.reporter.info(format!("Booster: {}", b.name)),
-            None => self.reporter.info("Booster: (未配置，将跳过)"),
-        }
-        // 本地校验：4 个 Stratagem 必须齐全且不重复；Booster 可空。
-        // 绝不做「自动左移」或猜测用户意图。
-        self.job.selection.validate()?;
-        self.goto(SyncState::FindingGameWindow);
-        Ok(())
-    }
-
-    fn step_finding_window(&mut self, env: &mut dyn SyncEnv) -> Result<(), LoadoutSyncError> {
-        self.reporter.stage(SyncState::FindingGameWindow, 0, "");
-        self.reporter.info("Finding HELLDIVERS 2");
-        let win = env.find_window()?;
-        if !env.window_is_foreground(&win) {
-            // 不抢焦点、不 Alt+Tab：直接失败并提示用户
-            return Err(LoadoutSyncError::GameNotForeground);
-        }
-        self.reporter
-            .info(format!("Window detected: {}x{}", win.width(), win.height()));
-        self.window = Some(win);
-        self.reporter.info("动作路径: direct_select（plan6）");
-        self.goto(SyncState::DirectSelecting);
-        Ok(())
-    }
-
-    /// 把整轮装配交给 `direct_select` 会话 —— **唯一**的动作路径。
-    ///
-    /// 这里**只做**：读 preset、装载目录、跑会话、上报诊断、把结论转成
-    /// `Completed` / `Err`。所有「识别 → 规划 → 有限输入 → 状态验证」都在
-    /// `direct_select` 里，controller 不再参与。
-    fn step_direct_select(&mut self, env: &mut dyn SyncEnv) -> Result<(), LoadoutSyncError> {
-        self.reporter.stage(SyncState::DirectSelecting, 0, "");
-        let win = self.window.ok_or(LoadoutSyncError::GameNotFound)?;
-
-        // ── 目录 → 分类器 ──
-        // 目录来自参考 `assets.rs` 的内嵌资产（assets/reference/icons）：
-        // 资产缺失在**编译期**就会失败，运行期不再有"磁盘目录缺失"这一分支。
-        let t0 = Instant::now();
-        let catalog = IconCatalog::load(crate::assets::default_icon_manifest()).map_err(|e| {
-            LoadoutSyncError::UnexpectedState {
-                detail: format!("参考图标目录加载失败（内嵌 assets/reference/icons）: {e:#}"),
-            }
-        })?;
-        let load_ms = t0.elapsed().as_millis();
-        let classifier = CatalogClassifier::load(catalog);
-        let build_ms = t0.elapsed().as_millis();
-        self.reporter.detail(format!(
-            "catalog {} 条可分类 / {} 条无法解析到当前图标键；加载 {}ms，模板构建累计 {}ms",
-            classifier.classifiable(),
-            classifier.unresolved.len(),
-            load_ms,
-            build_ms
-        ));
-        if !classifier.unresolved.is_empty() {
-            self.reporter.warn(format!(
-                "参考目录中未映射到当前图标键（不会作为目标）: {}",
-                classifier.unresolved.join(", ")
-            ));
-        }
-
-        // ── preset → 目录 ID（绝不猜：解析不出来就整轮拒绝） ──
-        let mut stratagems: Vec<String> = Vec::new();
-        for item in self.job.selection.stratagems.iter().flatten() {
-            let id = classifier.catalog_id_for_icon(&item.icon).ok_or_else(|| {
-                LoadoutSyncError::UnexpectedState {
-                    detail: format!(
-                        "参考目录里没有 {}（icon={}），direct_select 无法装配",
-                        item.name, item.icon
-                    ),
-                }
-            })?;
-            self.reporter
-                .info(format!("期望: {} → 目录 {}", item.name, id));
-            if !stratagems.iter().any(|s| s == id) {
-                stratagems.push(id.to_string());
-            }
-        }
-        let booster = match self.job.selection.booster.as_ref() {
-            Some(b) => {
-                let id = classifier.catalog_id_for_icon(&b.icon).ok_or_else(|| {
-                    LoadoutSyncError::UnexpectedState {
-                        detail: format!("参考目录里没有 Booster {}（icon={}）", b.name, b.icon),
-                    }
-                })?;
-                self.reporter
-                    .info(format!("期望: {} → 目录 {}", b.name, id));
-                Some(id.to_string())
-            }
-            None => None,
-        };
-        let plan = SessionPlan {
-            stratagems,
-            booster,
-        };
-
-        // ── 跑会话 ──
-        let cancel = self.reporter.cancel_check_handle();
-        let calibration = self.job.calibration;
-        let mut log = |line: &str| self.reporter.info(line.to_string());
-        let result = {
-            let mut io = RealDirectSelectIo::with_calibration(env, win, calibration, classifier);
-            io = io.with_cancel(&cancel);
-            let r = session::run(&mut io, &plan, &mut log);
-            // 让失败截图仍能拿到 direct_select 看到的那一帧
-            self.frame = io.last_frame().cloned();
-            r
-        };
-
-        match result {
-            Ok(report) => {
-                self.reporter.detail(report.summary());
-                self.reporter
-                    .info(format!("阶段: {}", report.phases.join(" → ")));
-                if report.is_success() {
-                    self.goto(SyncState::Completed);
-                    Ok(())
-                } else {
-                    Err(LoadoutSyncError::UnexpectedState {
-                        detail: format!(
-                            "direct_select 未完成（已确认 {}/{}）: {}",
-                            report.selected.len(),
-                            report.expected,
-                            report.failures.join(" / ")
-                        ),
-                    })
-                }
-            }
-            Err(error) => {
-                self.reporter.detail(error.report.summary());
-                self.reporter.info(format!(
-                    "direct_select 已确认 {}/{} 项后安全停止",
-                    error.report.selected.len(),
-                    error.report.expected
-                ));
-                Err(LoadoutSyncError::UnexpectedState {
-                    detail: format!("direct_select 安全停止: {error}"),
-                })
-            }
-        }
-    }
-}
-
-// ─── 驱动 ───
-
-/// 运行整个流程；任何错误都会先释放输入，再返回状态。
-pub fn run(
-    env: &mut dyn SyncEnv,
-    job: SyncJob,
+/// 日志与进度上报（线程安全：`AppEventSink` 要求闭包 `Send + Sync`）。
+#[derive(Clone)]
+struct Reporter {
     shared: Arc<LoadoutSyncShared>,
-    tx: std::sync::mpsc::Sender<SyncEvent>,
-) -> SyncStatus {
+    tx: Arc<Mutex<Sender<SyncEvent>>>,
+}
+
+impl Reporter {
+    fn new(shared: Arc<LoadoutSyncShared>, tx: Sender<SyncEvent>) -> Self {
+        Self {
+            shared,
+            tx: Arc::new(Mutex::new(tx)),
+        }
+    }
+
+    fn log(&self, level: SyncLogLevel, text: String) {
+        if let Ok(tx) = self.tx.lock() {
+            let _ = tx.send(SyncEvent::Log(level, text));
+        }
+    }
+
+    fn info(&self, text: impl AsRef<str>) {
+        self.log(SyncLogLevel::Info, log_line(text.as_ref()));
+    }
+
+    fn warn(&self, text: impl AsRef<str>) {
+        self.log(SyncLogLevel::Warn, log_line(text.as_ref()));
+    }
+
+    fn stage(&self, stage: &'static str, step: usize, target: impl Into<String>) {
+        self.shared.set_stage(stage, step, target);
+    }
+
+    fn detail(&self, text: impl Into<String>) {
+        self.shared.set_detail(text);
+    }
+}
+
+/// 工作线程入口：唯一动作路径。
+pub fn run(job: SyncJob, shared: Arc<LoadoutSyncShared>, tx: Sender<SyncEvent>) {
     let reporter = Reporter::new(shared.clone(), tx.clone());
-    let total_timeout_ms = job.params.total_timeout_ms;
-    let mut machine = Machine::new(job, reporter);
-    machine.goto(SyncState::Preparing);
-    // 硬上限：状态机自身的超时依赖 SyncEnv 时钟，若某个状态循环不推进时钟
-    // （或环境实现有问题）就会死循环，因此这里再加「迭代次数 + 真实墙钟」双保险。
-    let max_iterations = (total_timeout_ms / POLL_MS).max(64) * 8;
-    let wall_deadline =
-        std::time::Instant::now() + Duration::from_millis(total_timeout_ms * 3 + 10_000);
-    let mut iterations: u64 = 0;
-    let status = loop {
-        iterations += 1;
-        if iterations > max_iterations {
-            let err = LoadoutSyncError::UnexpectedState {
-                detail: format!("状态机迭代超过上限（{max_iterations}）"),
-            };
-            env.input().release_all();
-            machine
-                .reporter
-                .error(format!("ERROR: {} — {}", err.code(), err.message()));
-            break status_from_error(&err);
-        }
-        if std::time::Instant::now() > wall_deadline {
-            let err = LoadoutSyncError::Timeout {
-                stage: "WallClock",
-                ms: total_timeout_ms * 3 + 10_000,
-            };
-            env.input().release_all();
-            machine
-                .reporter
-                .error(format!("ERROR: {} — {}", err.code(), err.message()));
-            break status_from_error(&err);
-        }
-        let state = machine.state();
-        if state.is_terminal() {
-            break match state {
-                SyncState::Completed => SyncStatus::Succeeded,
-                SyncState::Cancelled => SyncStatus::Cancelled,
-                _ => SyncStatus::Failed {
-                    code: "UnexpectedState".into(),
-                    message: "自动装配失败：内部状态异常。".into(),
-                },
-            };
-        }
-        match machine.advance(env) {
-            Ok(()) => continue,
-            Err(err) => {
-                // 异常路径也必须释放所有按键/鼠标，绝不留按下状态
-                env.input().release_all();
-                machine
-                    .reporter
-                    .error(format!("ERROR: {} — {}", err.code(), err.message()));
-                if let Some(hint) = err.hint() {
-                    machine.reporter.warn(hint);
-                }
-                if machine.job.debug_screenshots {
-                    if let Some(frame) = machine.frame.clone() {
-                        env.save_debug(
-                            &format!("failed_{}", machine.state.name()),
-                            &frame,
-                            err.code(),
-                        );
-                    }
-                }
-                machine.reporter.info("Automation aborted");
-                // 审计轨迹：失败/取消也是一次明确的状态迁移（便于日志与测试追踪）
-                machine.goto(if err.is_cancelled() {
-                    SyncState::Cancelled
-                } else {
-                    SyncState::Failed
-                });
-                break status_from_error(&err);
-            }
+    let started = Instant::now();
+    let outcome = run_inner(&job, &reporter, &shared);
+
+    // 取消优先于结果：取消时一律报 Cancelled（哪怕参考链路返回了其它错误）。
+    let status = if shared.is_cancelled() {
+        SyncStatus::Cancelled
+    } else {
+        match outcome {
+            Ok(()) => SyncStatus::Succeeded,
+            Err(error) => status_from_error(&error),
         }
     };
-    // 正常/取消路径同样释放输入
-    env.input().release_all();
-    if matches!(status, SyncStatus::Succeeded) {
-        machine.reporter.info("Completed");
-    } else if matches!(status, SyncStatus::Cancelled) {
-        machine.reporter.info("Cancelled by user");
+
+    match &status {
+        SyncStatus::Succeeded => reporter.info(format!(
+            "装配完成，用时 {:.1}s",
+            started.elapsed().as_secs_f32()
+        )),
+        SyncStatus::Cancelled => {
+            reporter.warn("已取消：鼠标按键状态由参考 InputSession 的 Drop 释放");
+        }
+        SyncStatus::Failed { code, message } => {
+            reporter.warn(format!("失败 {code}: {message}"));
+        }
+        _ => {}
     }
+
     shared.finish(status.clone());
-    let _ = tx.send(SyncEvent::Finished(status.clone()));
-    status
+    if let Ok(tx) = reporter.tx.lock() {
+        let _ = tx.send(SyncEvent::Finished(status));
+    }
 }
 
-// ─── 真实环境实现 ───
+fn run_inner(
+    job: &SyncJob,
+    reporter: &Reporter,
+    shared: &LoadoutSyncShared,
+) -> Result<(), LoadoutSyncError> {
+    // ── 参考运行时：内嵌目录（assets/reference/icons）+ 内嵌标定（data/calibration.json）──
+    reporter.stage("Preparing", 0, "");
+    let runtime = RecognizerRuntime::load().map_err(|error| LoadoutSyncError::UnexpectedState {
+        detail: format!("参考运行时加载失败（内嵌目录/标定）: {error:#}"),
+    })?;
+    let catalog = runtime.icon_catalog().clone();
+    reporter.info(format!("参考目录已加载：{} 条", catalog.iter().count()));
 
-pub struct RealEnv {
-    input: crate::loadout_sync::input::LoadoutInputController,
-    started: Instant,
-    debug_dir: Option<std::path::PathBuf>,
-    debug_overlay: bool,
-}
-
-impl RealEnv {
-    pub fn new(debug_screenshots: bool, debug_overlay: bool) -> Self {
-        Self {
-            input: crate::loadout_sync::input::LoadoutInputController::new(),
-            started: Instant::now(),
-            debug_dir: debug_screenshots
-                .then(|| crate::util::app_dir().join("screenshots/loadout_sync")),
-            debug_overlay,
+    // ── S1：H2AC 目标 → 参考目录 item_id（解析不出即整轮拒答）──
+    let mut stratagems: Vec<String> = Vec::new();
+    for item in job.selection.stratagems.iter().flatten() {
+        let id = catalog_bridge::resolve_item_id(&catalog, &item.icon).ok_or_else(|| {
+            LoadoutSyncError::UnexpectedState {
+                detail: format!("参考目录里没有 {}（icon={}），无法装配", item.name, item.icon),
+            }
+        })?;
+        reporter.info(format!("目标: {} → {id}", item.name));
+        if !stratagems.iter().any(|existing| existing == id) {
+            stratagems.push(id.to_string());
         }
     }
+    let booster = match job.selection.booster.as_ref() {
+        Some(item) => {
+            let id = catalog_bridge::resolve_item_id(&catalog, &item.icon).ok_or_else(|| {
+                LoadoutSyncError::UnexpectedState {
+                    detail: format!("参考目录里没有 Booster {}（icon={}）", item.name, item.icon),
+                }
+            })?;
+            reporter.info(format!("目标: {} → {id}", item.name));
+            Some(id.to_string())
+        }
+        None => None,
+    };
+
+    // ── 窗口：参考实现要求游戏是前台窗口且标题匹配 ──
+    reporter.stage("Window", 0, "");
+    reporter.info("查找 HELLDIVERS 2 窗口");
+    let window = match find_game_window() {
+        Ok(window) => window,
+        Err(error) => {
+            reporter.warn(format!("未找到前台游戏窗口: {error:#}"));
+            return Err(LoadoutSyncError::GameNotForeground);
+        }
+    };
+
+    // ── 捕获会话 + 标定 ROI + 自动化会话（全部参考原文）──
+    reporter.stage("Capture", 0, "");
+    let mut capture_session = CaptureSessionManager::new();
+    let capture = capture_session
+        .get_or_create(&window)
+        .map_err(|error| LoadoutSyncError::CaptureFailed {
+            detail: format!("{error:#}"),
+        })?;
+    let region = bind_loadout_region(capture, runtime.calibration()).map_err(|error| {
+        LoadoutSyncError::CaptureFailed {
+            detail: format!("标定 ROI 解析失败: {error:#}"),
+        }
+    })?;
+    let mut automation =
+        AutomationSession::new(region, window).map_err(|error| LoadoutSyncError::InputError {
+            detail: format!("{error:#}"),
+        })?;
+
+    // ── 界面状态：Home 三态由参考 detect_ui_state 判定 ──
+    reporter.stage("Scanning", 1, "");
+    let initial = match scan_loadout_home(&mut automation, &runtime) {
+        Ok(observation) => observation,
+        Err(error) => {
+            reporter.warn(format!("配装 Home 扫描失败: {error:#}"));
+            return Err(LoadoutSyncError::LoadoutHomeNotDetected { score: 0.0 });
+        }
+    };
+    let ui_state = detect_ui_state(&initial);
+    reporter.info(format!("界面状态: {}", ui_state.label()));
+    reporter.detail(format!("界面: {}", ui_state.label()));
+    if shared.is_cancelled() {
+        return Err(LoadoutSyncError::Cancelled);
+    }
+
+    // ── S3：参考事件 → H2AC 日志/进度 ──
+    let events = {
+        let reporter = reporter.clone();
+        AppEventSink::new(move |event: AppEvent| match event {
+            AppEvent::ListSelectionStarted {
+                item_kind,
+                requested_items,
+            } => reporter.info(format!("开始选择 {} ×{requested_items}", item_kind.label())),
+            AppEvent::ItemSelected { item_id } => {
+                reporter.info(format!("已确认选中: {item_id}"));
+            }
+            AppEvent::UiStateDetected { state } => {
+                reporter.detail(format!("界面: {state}"));
+            }
+            AppEvent::PresetDone { preset, warning } => {
+                if let Some(warning) = warning {
+                    reporter.warn(format!("{preset}: {warning}"));
+                }
+            }
+            other => reporter.detail(format!("{other:?}")),
+        })
+    };
+
+    match ui_state {
+        UiState::HomeEmpty => {
+            reporter.stage("Stratagems", 1, "");
+            apply_empty_loadout_preset(&runtime, &mut automation, &events, &stratagems, true)
+                .map_err(|error| LoadoutSyncError::UnexpectedState {
+                    detail: format!("装配战备失败: {error:#}"),
+                })?;
+            if shared.is_cancelled() {
+                return Err(LoadoutSyncError::Cancelled);
+            }
+
+            if let Some(booster) = booster.as_ref() {
+                reporter.stage("Booster", 5, "");
+                apply_booster_from_home(
+                    &runtime,
+                    &mut automation,
+                    &events,
+                    std::slice::from_ref(booster),
+                )
+                .map_err(|error| LoadoutSyncError::UnexpectedState {
+                    detail: format!("装配 Booster 失败: {error:#}"),
+                })?;
+            }
+        }
+        UiState::HomeFilled => {
+            // D2：本次只做装配，不实现参考的"保存预设"路径。
+            reporter.warn("配装界面已填满：请先清空四个战备槽再自动装配");
+            return Err(LoadoutSyncError::LoadoutNotEmpty { filled: 4 });
+        }
+        UiState::HomeMixed => {
+            reporter.warn("配装界面部分填充：拒绝装配，避免误点到错误目标");
+            return Err(LoadoutSyncError::UnexpectedState {
+                detail: "配装界面部分填充（HomeMixed），已按安全策略拒绝".into(),
+            });
+        }
+        UiState::List(_) | UiState::Unknown => {
+            reporter.warn("未检测到配装 Home 界面（可能停在列表或其它界面）");
+            return Err(LoadoutSyncError::LoadoutHomeNotDetected { score: 0.0 });
+        }
+    }
+
+    if shared.is_cancelled() {
+        return Err(LoadoutSyncError::Cancelled);
+    }
+
+    if job.debug_screenshots {
+        save_debug_frame(&mut automation, reporter);
+    }
+
+    if job.params.debug_overlay {
+        reporter.warn("debug_overlay 已随旧视觉管线移除（参考栈不提供叠加图）");
+    }
+    Ok(())
 }
 
-impl Drop for RealEnv {
-    fn drop(&mut self) {
-        // 任务结束就释放截图会话：WGC 会话存活期间系统会在被捕获窗口周围显示捕获指示框，
-        // 缓存到下一次任务既无必要也不礼貌；下次任务开始时按需重建。
-        crate::loadout_sync::wgc::invalidate();
+/// 调试帧落盘（H2AC 侧能力；参考栈不落盘，这里在阶段末补抓一帧）。
+fn save_debug_frame(automation: &mut AutomationSession<'_>, reporter: &Reporter) {
+    let Ok(image) = automation.capture() else {
+        reporter.warn("调试帧抓取失败");
+        return;
+    };
+    let dir = crate::util::app_dir().join("loadout_sync_debug");
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        reporter.warn(format!("调试帧目录创建失败: {error}"));
+        return;
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("loadout_sync_{stamp}.png"));
+    match image.save(&path) {
+        Ok(()) => reporter.info(format!("调试帧: {}", path.display())),
+        Err(error) => reporter.warn(format!("调试帧保存失败: {error}")),
     }
 }
 
-impl SyncEnv for RealEnv {
-    fn find_window(&mut self) -> Result<GameWindowInfo, LoadoutSyncError> {
-        crate::loadout_sync::window::find_game_window()
-    }
-
-    fn window_is_foreground(&mut self, win: &GameWindowInfo) -> bool {
-        crate::loadout_sync::window::is_foreground(win.hwnd)
-    }
-
-    fn capture(
-        &mut self,
-        win: &GameWindowInfo,
-        want_color: bool,
-    ) -> Result<CapturedFrame, LoadoutSyncError> {
-        crate::loadout_sync::capture::capture_client_area(win, want_color || self.debug_overlay)
-    }
-
-    fn input(&mut self) -> &mut dyn SyncInput {
-        &mut self.input
-    }
-
-    fn now_ms(&mut self) -> u64 {
-        self.started.elapsed().as_millis() as u64
-    }
-
-    fn sleep_ms(&mut self, ms: u64) {
-        std::thread::sleep(Duration::from_millis(ms));
-    }
-
-    fn save_debug(&mut self, name: &str, frame: &CapturedFrame, note: &str) {
-        let Some(dir) = &self.debug_dir else { return };
-        let path = dir.join(format!("{name}.png"));
-        let _ = frame.save_png(&path);
-        crate::util::log_to_file(
-            "loadout_sync.log",
-            &format!("debug screenshot: {} ({note})", path.display()),
-        );
-    }
+/// 取消标志的只读检查（供将来放进参考循环边界的接缝使用）。
+#[allow(dead_code)]
+fn cancelled(shared: &LoadoutSyncShared) -> bool {
+    shared.is_cancelled() && shared.cancel_handle().load(Ordering::SeqCst)
 }

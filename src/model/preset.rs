@@ -144,19 +144,21 @@ impl H2ACApp {
             }
             return;
         }
-        let Ok(game) = crate::loadout_sync::window::find_game_window() else {
+        let Ok(game) = crate::game_window::find_game_window() else {
             return;
         };
         let size = ctx.screen_rect().size();
         let margin = 24.0;
         let w = size.x.max(OVERLAY_DESIGN_W);
-        let x = (game.client.x as f32 + game.client.w as f32 - w - margin).max(0.0);
-        let y = (game.client.y as f32 + margin).max(0.0);
-        let dpi_scale = if game.dpi == 0 {
-            1.0
-        } else {
-            game.dpi as f32 / 96.0
+        let (client_x, client_y) = game.client_origin();
+        let (client_w, _client_h) = game.client_size();
+        let x = (client_x as f32 + client_w as f32 - w - margin).max(0.0);
+        let y = (client_y as f32 + margin).max(0.0);
+        // 参考 `WindowTarget` 不暴露 DPI，这里直接问窗口要（win32 0.62）。
+        let dpi = unsafe {
+            windows::Win32::UI::HiDpi::GetDpiForWindow(game.native_handle())
         };
+        let dpi_scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
         if let Some(hwnd) = crate::overlay_win::own_window() {
             crate::overlay_win::move_to(hwnd, x as i32, (y * dpi_scale) as i32);
         }
