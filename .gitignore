@@ -2,8 +2,14 @@
 *.exe
 *.pdb
 panic.log
-/docs
 /hd2-preset-helper-0.1.4
 # local wiki page snapshots
 /Stratagems - The Helldivers Wiki.html
 /Stratagems - The Helldivers Wiki_files/
+# 调试/临时产物（保留在磁盘，不参与版本控制）
+/screenshots
+/1231.png
+/屏幕截图 *.png
+/Typora_Hook_Log.txt
+/.tmp_ov2
+/.tmp_matcher_backup.rs
